@@ -1,0 +1,36 @@
+name: Portfolio mail
+
+on:
+  schedule:
+    # 09:15 Stockholm (börsdagar).
+    # GitHub Actions cron körs i UTC:
+    # - vintertid (CET): 09:15 = 08:15 UTC
+    # - sommartid (CEST): 09:15 = 07:15 UTC
+    - cron: "15 8 * * 1-5"
+    - cron: "15 7 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r portfolio_cloud_package/requirements.txt
+
+      - name: Send portfolio email
+        env:
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          python portfolio_cloud_package/portfolio_cloud.py
