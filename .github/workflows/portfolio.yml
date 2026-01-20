@@ -33,4 +33,4 @@ jobs:
           GMAIL_TO: ${{ secrets.GMAIL_TO }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: |
-          python portfolio_cloud_package/portfolio_cloud.py
+          python portfolio_cloud.py
