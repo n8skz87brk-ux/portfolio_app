@@ -43,10 +43,11 @@ jobs:
           fi
 
       - name: Send portfolio email
-        if: steps.gate.outputs.send == 'true'
-        env:
-          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
-          GMAIL_TO: ${{ secrets.GMAIL_TO }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: |
-          python portfolio_cloud.py
+  if: steps.gate.outputs.send == 'true' && github.ref == 'refs/heads/main'
+  env:
+    GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+    GMAIL_TO: ${{ secrets.GMAIL_TO }}
+    GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+  run: |
+    python portfolio_cloud.py
+
