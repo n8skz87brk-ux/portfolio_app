@@ -27,7 +27,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ✅ Gate: kör bara om klockan är 09:15 i Stockholm
+      - name: Gate to 09:15 Europe/Stockholm
+        id: gate
+        shell: bash
+        run: |
+          NOW=$(TZ=Europe/Stockholm date +%H:%M)
+          DOW=$(TZ=Europe/Stockholm date +%u) # 1=Mon ... 7=Sun
+          echo "Stockholm time: $NOW, weekday: $DOW"
+
+          if [[ "$DOW" -ge 1 && "$DOW" -le 5 && "$NOW" == "09:15" ]]; then
+            echo "send=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "send=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Send portfolio email
+        if: steps.gate.outputs.send == 'true'
         env:
           GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
           GMAIL_TO: ${{ secrets.GMAIL_TO }}
