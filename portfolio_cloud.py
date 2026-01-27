@@ -1,6 +1,5 @@
 # feature/holdings-input branch – PR test
 
-
 import os
 from datetime import datetime
 import smtplib
@@ -141,6 +140,15 @@ def build_email_html(updated_at: str, total_value: float, total_day: float, rows
 </html>"""
 
 
+def make_subject() -> str:
+    """Sätter tydlig subject vid manuell körning via GitHub Actions (workflow_dispatch)."""
+    base = "Min portfölj – uppdatering"
+    event_name = (os.getenv("GITHUB_EVENT_NAME") or "").lower()
+    if event_name == "workflow_dispatch":
+        return base + " (MANUELL)"
+    return base
+
+
 def send_email(subject: str, body_text: str, body_html: str):
     gmail_from = os.environ["GMAIL_FROM"]
     gmail_to = os.environ["GMAIL_TO"]
@@ -206,7 +214,8 @@ def main():
 
     rows.sort(key=lambda r: r["sort_value"], reverse=True)
 
-    subject = "Min portfölj – uppdatering"
+    subject = make_subject()
+
     body_text_lines = [
         f"Uppdaterad: {updated_at}",
         "",
