@@ -24,4 +24,4 @@ jobs:
 
       - name: Run portfolio script
         run: |
-          python portfolio_app.py
+          python portfolio_cloud.py
