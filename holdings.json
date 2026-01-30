@@ -1,7 +1,47 @@
 [
   {
+    "name": "Camurus",
+    "symbol": "CAMX.ST",
+    "shares": 16
+  },
+  {
+    "name": "Elemental (CAD)",
+    "symbol": "ELE.V",
+    "shares": 249
+  },
+  {
+    "name": "Mineros",
+    "symbol": "MSA.TO",
+    "shares": 753
+  },
+  {
+    "name": "Nelly Group",
+    "symbol": "NELLY.ST",
+    "shares": 98
+  },
+  {
+    "name": "Nordea Bank",
+    "symbol": "NDA-SE.ST",
+    "shares": 6
+  },
+  {
+    "name": "Plejd",
+    "symbol": "PLEJD.ST",
+    "shares": 132
+  },
+  {
+    "name": "RevolutionRace",
+    "symbol": "RVRC.ST",
+    "shares": 79
+  },
+  {
     "name": "Saab B",
     "symbol": "SAAB-B.ST",
     "shares": 131
+  },
+  {
+    "name": "Swedish Orphan Biovitrum",
+    "symbol": "SOBI.ST",
+    "shares": 86
   }
 ]
