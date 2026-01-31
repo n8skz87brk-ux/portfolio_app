@@ -44,7 +44,7 @@ HOLDINGS = [
     # {"name": "Camurus", "symbol": "CAMX.ST", "shares": 16},
 ]
 
-DEFAULT_HOLDINGS_PATH = Path("data") / "holdings.json"
+DEFAULT_HOLDINGS_PATH = Path("holdings.json")
 
 
 # ====== 2) Utility ======
