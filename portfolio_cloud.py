@@ -1,11 +1,10 @@
 # portfolio_cloud.py
-# Skickar daglig portföljrapport via email (HTML + text)
-# Layout:
-# - Bolag, Antal, Senaste kurs, Värde, Förändring (kr), Förändring (%)
-# - Hela kronor (inga ören) för värde/förändring
-# - SEK visas bara i sammanfattningen
-# - Blått vid uppgång, rött vid nedgång (HTML-mail)
+# Daglig portföljrapport via email (HTML + text)
 # - Läser innehav från holdings.json (fallback: HOLDINGS i koden)
+# - Valutakonverterar till SEK om instrumentet handlas i annan valuta (t.ex. CAD, USD)
+# - Tabell: Bolag, Antal, Senaste kurs, Värde, Förändring (kr), Förändring (%)
+# - Hela kronor för värde/förändring, SEK visas bara i sammanfattningen
+# - Blå upp, röd ner (HTML)
 # - Bakåtkompatibel med olika secret-namn
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ import yfinance as yf
 # 1) INNEHAV: holdings.json (fallback: HOLDINGS)
 # =========================================================
 HOLDINGS = [
-    # Fallback om holdings.json saknas
     {"name": "Camurus", "symbol": "CAMX.ST", "shares": 16},
     {"name": "Nelly Group", "symbol": "NELLY.ST", "shares": 98},
 ]
@@ -35,16 +33,15 @@ HOLDINGS_PATH = os.getenv("HOLDINGS_PATH", "holdings.json").strip()
 
 def load_holdings() -> list[dict[str, Any]]:
     """
-    Förväntar sig holdings.json med en lista av objekt:
-      [{"name":"Camurus","symbol":"CAMX.ST","shares":16}, ...]
-    Alternativt kan filen ha ett nyckelfält, t.ex. {"holdings":[...]}.
+    Förväntar sig holdings.json med antingen:
+      - en lista: [{"name":"...","symbol":"...","shares":...}, ...]
+      - eller dict: {"holdings":[...]}
     """
-    # 1) Försök läsa från fil
     try:
         with open(HOLDINGS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        if isinstance(data, dict) and "holdings" in data and isinstance(data["holdings"], list):
+        if isinstance(data, dict) and isinstance(data.get("holdings"), list):
             holdings = data["holdings"]
         elif isinstance(data, list):
             holdings = data
@@ -69,7 +66,6 @@ def load_holdings() -> list[dict[str, Any]]:
     except Exception as e:
         print(f"VARNING: kunde inte läsa {HOLDINGS_PATH}: {e}", file=sys.stderr)
 
-    # 2) Fallback till hårdkodade HOLDINGS
     return HOLDINGS
 
 
@@ -87,35 +83,11 @@ def _getenv_any(*names: str, default: str = "") -> str:
 SMTP_HOST = _getenv_any("SMTP_HOST", "SMTP_SERVER", "MAIL_SERVER", "EMAIL_HOST")
 SMTP_PORT = int(_getenv_any("SMTP_PORT", "MAIL_PORT", default="587") or "587")
 
-SMTP_USER = _getenv_any(
-    "SMTP_USER",
-    "EMAIL_USER",
-    "MAIL_USER",
-    "FROM_EMAIL",
-    "SENDER_EMAIL",
-)
+SMTP_USER = _getenv_any("SMTP_USER", "EMAIL_USER", "MAIL_USER", "FROM_EMAIL", "SENDER_EMAIL")
+SMTP_PASS = _getenv_any("SMTP_PASS", "EMAIL_PASS", "MAIL_PASS", "APP_PASSWORD", "EMAIL_APP_PASSWORD")
 
-SMTP_PASS = _getenv_any(
-    "SMTP_PASS",
-    "EMAIL_PASS",
-    "MAIL_PASS",
-    "APP_PASSWORD",
-    "EMAIL_APP_PASSWORD",
-)
-
-MAIL_TO = _getenv_any(
-    "MAIL_TO",
-    "TO_EMAIL",
-    "EMAIL_TO",
-    "RECIPIENT_EMAIL",
-)
-
-MAIL_FROM = _getenv_any(
-    "MAIL_FROM",
-    "FROM_EMAIL",
-    "SENDER_EMAIL",
-    default=SMTP_USER,
-)
+MAIL_TO = _getenv_any("MAIL_TO", "TO_EMAIL", "EMAIL_TO", "RECIPIENT_EMAIL")
+MAIL_FROM = _getenv_any("MAIL_FROM", "FROM_EMAIL", "SENDER_EMAIL", default=SMTP_USER)
 
 SUBJECT_PREFIX = _getenv_any("SUBJECT_PREFIX", default="Portföljrapport")
 
@@ -124,7 +96,6 @@ SUBJECT_PREFIX = _getenv_any("SUBJECT_PREFIX", default="Portföljrapport")
 # 3) FORMATTERING
 # =========================================================
 def _fmt_int(x: Any) -> str:
-    """Hela kronor (inga ören), tusentalsavgränsning med mellanslag."""
     try:
         return f"{float(x):,.0f}".replace(",", " ")
     except Exception:
@@ -132,7 +103,7 @@ def _fmt_int(x: Any) -> str:
 
 
 def _fmt_price(x: Any) -> str:
-    """Kurs: 2 decimaler."""
+    """Kurs med 2 decimaler, svensk decimal-komma."""
     try:
         return f"{float(x):,.2f}".replace(",", " ").replace(".", ",")
     except Exception:
@@ -140,7 +111,6 @@ def _fmt_price(x: Any) -> str:
 
 
 def _fmt_shares(x: Any) -> str:
-    """Antal: visa utan decimal om heltal, annars 2 decimaler."""
     try:
         v = float(x)
         if abs(v - round(v)) < 1e-9:
@@ -180,37 +150,89 @@ def _safe_float(x: Any) -> float | None:
 
 
 # =========================================================
-# 4) HÄMTA KURSER
+# 4) VALUTA (FX) – konvertera till SEK
 # =========================================================
-def fetch_quote(symbol: str) -> dict[str, float | None]:
+_FX_CACHE: dict[str, float] = {}
+
+
+def get_fx_to_sek(currency: str) -> float | None:
+    """
+    Returnerar växelkurs currency -> SEK.
+    Ex: USD -> SEK via 'USDSEK=X'
+    """
+    if not currency:
+        return None
+
+    cur = currency.upper().strip()
+    if cur == "SEK":
+        return 1.0
+
+    if cur in _FX_CACHE:
+        return _FX_CACHE[cur]
+
+    fx_symbol = f"{cur}SEK=X"
+    try:
+        t = yf.Ticker(fx_symbol)
+        # Försök fast_info först
+        rate = None
+        try:
+            fi = t.fast_info or {}
+            rate = _safe_float(fi.get("last_price"))
+        except Exception:
+            rate = None
+
+        # Fallback: history
+        if rate is None:
+            hist = t.history(period="5d")
+            closes = hist["Close"].dropna()
+            if len(closes) >= 1:
+                rate = float(closes.iloc[-1])
+
+        if rate is None:
+            return None
+
+        _FX_CACHE[cur] = rate
+        return rate
+
+    except Exception:
+        return None
+
+
+# =========================================================
+# 5) HÄMTA KURSER (+ valuta)
+# =========================================================
+def fetch_quote(symbol: str) -> dict[str, float | str | None]:
     """
     Returnerar:
-      price = senaste kurs
-      prev_close = föregående stängning
+      price = senaste kurs (i instrumentets valuta)
+      prev_close = föregående stängning (i instrumentets valuta)
+      currency = t.ex. 'SEK', 'USD', 'CAD'
     """
     t = yf.Ticker(symbol)
 
     price = None
     prev_close = None
+    currency = None
 
     # Snabb väg
     try:
         fi = t.fast_info or {}
         price = _safe_float(fi.get("last_price"))
         prev_close = _safe_float(fi.get("previous_close"))
+        currency = fi.get("currency") or currency
     except Exception:
         pass
 
     # Fallback via info
-    if price is None or prev_close is None:
-        try:
-            info = t.info or {}
-            price = price or _safe_float(info.get("regularMarketPrice") or info.get("currentPrice"))
-            prev_close = prev_close or _safe_float(info.get("previousClose"))
-        except Exception:
-            pass
+    try:
+        info = t.info or {}
+        currency = currency or info.get("currency")
+        price = price or _safe_float(info.get("regularMarketPrice") or info.get("currentPrice"))
+        prev_close = prev_close or _safe_float(info.get("previousClose"))
+    except Exception:
+        pass
 
-    # Sista utväg: history
+    # Sista utväg: history (pris + prev_close)
     if price is None or prev_close is None:
         try:
             hist = t.history(period="5d")
@@ -218,14 +240,16 @@ def fetch_quote(symbol: str) -> dict[str, float | None]:
             if len(closes) >= 2:
                 price = price or float(closes.iloc[-1])
                 prev_close = prev_close or float(closes.iloc[-2])
+            elif len(closes) == 1:
+                price = price or float(closes.iloc[-1])
         except Exception:
             pass
 
-    return {"price": price, "prev_close": prev_close}
+    return {"price": price, "prev_close": prev_close, "currency": currency}
 
 
 # =========================================================
-# 5) BERÄKNINGAR
+# 6) BERÄKNINGAR (konverterar allt till SEK för värden/changes)
 # =========================================================
 def compute_portfolio(holdings: list[dict[str, Any]]):
     rows = []
@@ -243,12 +267,23 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
         q = fetch_quote(symbol)
         price = q["price"]
         prev = q["prev_close"]
+        currency = (q.get("currency") or "SEK").upper()
 
         if price is None or prev is None:
             continue
 
-        value = shares * price
-        prev_value = shares * prev
+        fx = get_fx_to_sek(currency)
+        if fx is None:
+            # Kan inte konvertera -> hoppa över (eller så kan vi välja att ändå visa original)
+            print(f"VARNING: kunde inte hämta FX {currency}->SEK för {name} ({symbol})", file=sys.stderr)
+            continue
+
+        # Konvertera kurs till SEK så att Värde/Förändring blir rätt i kronor
+        price_sek = float(price) * fx
+        prev_sek = float(prev) * fx
+
+        value = shares * price_sek
+        prev_value = shares * prev_sek
         change = value - prev_value
         pct = (change / prev_value * 100.0) if prev_value else 0.0
 
@@ -259,7 +294,7 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
             {
                 "name": name,
                 "shares": shares,
-                "price": price,
+                "price_sek": price_sek,   # visas i kolumnen "Senaste kurs"
                 "value": value,
                 "change": change,
                 "pct": pct,
@@ -273,29 +308,29 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
 
 
 # =========================================================
-# 6) HTML + TEXT MAIL
+# 7) HTML + TEXT MAIL (kolumnbredder + nowrap fixar wrap-problemet)
 # =========================================================
 def build_html(rows, total_value, total_change, total_pct, title, timestamp):
     total_color = _color_for_change(total_change)
-
     rows = sorted(rows, key=lambda r: r["value"], reverse=True)
 
+    # Bygg rader
     row_html = ""
     for r in rows:
         color = _color_for_change(r["change"])
         row_html += f"""
         <tr>
           <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7">{r['name']}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right">{_fmt_shares(r['shares'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right">{_fmt_price(r['price'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right">{_fmt_int(r['value'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap">{_fmt_shares(r['shares'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap">{_fmt_price(r['price_sek'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap">{_fmt_int(r['value'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap;color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap;color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
         </tr>
         """
 
     return f"""
-    <div style="font-family:Arial,sans-serif;max-width:820px;margin:0 auto;padding:6px 10px">
+    <div style="font-family:Arial,sans-serif;max-width:860px;margin:0 auto;padding:6px 10px">
       <h2 style="margin:10px 0 4px 0;font-size:18px;color:#111">{title}</h2>
       <div style="margin:0 0 12px 0;font-size:12px;color:#666">{timestamp}</div>
 
@@ -308,7 +343,15 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
       </div>
 
       <table width="100%" cellspacing="0" cellpadding="0"
-             style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden">
+             style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden;table-layout:fixed">
+        <colgroup>
+          <col style="width:34%">
+          <col style="width:10%">
+          <col style="width:16%">
+          <col style="width:16%">  <!-- Värde: bredare -->
+          <col style="width:16%">
+          <col style="width:8%">
+        </colgroup>
         <thead>
           <tr style="background:#f6f7f9">
             <th align="left"  style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Bolag</th>
@@ -325,7 +368,7 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
       </table>
 
       <div style="margin-top:10px;font-size:12px;color:#777">
-        (Värde/förändring i hela kronor. Blå = upp, röd = ner.)
+        (Belopp i hela kronor. Blå = upp, röd = ner.)
       </div>
     </div>
     """
@@ -340,17 +383,17 @@ def build_text(rows, total_value, total_change, total_pct, title, timestamp):
         f"Förändring:  {_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})",
         "",
         "Bolag | Antal | Kurs | Värde | Förändring | %",
-        "-" * 80,
+        "-" * 90,
     ]
     for r in sorted(rows, key=lambda r: r["value"], reverse=True):
         lines.append(
-            f"{r['name']} | {_fmt_shares(r['shares'])} | {_fmt_price(r['price'])} | {_fmt_int(r['value'])} | {_fmt_int(r['change'])} | {_fmt_pct(r['pct'])}"
+            f"{r['name']} | {_fmt_shares(r['shares'])} | {_fmt_price(r['price_sek'])} | {_fmt_int(r['value'])} | {_fmt_int(r['change'])} | {_fmt_pct(r['pct'])}"
         )
     return "\n".join(lines)
 
 
 # =========================================================
-# 7) SKICKA MAIL
+# 8) SKICKA MAIL
 # =========================================================
 def send_email(subject, html, text):
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_TO]):
@@ -373,7 +416,7 @@ def send_email(subject, html, text):
 
 
 # =========================================================
-# 8) MAIN
+# 9) MAIN
 # =========================================================
 def main():
     now = datetime.now()
