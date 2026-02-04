@@ -105,7 +105,7 @@ def get_last_two_closes(symbols: list[str]) -> dict[str, tuple[float, float]]:
 
     out: dict[str, tuple[float, float]] = {}
 
-    # If only one ticker, columns are not MultiIndex the same way.
+    # Single ticker case
     if not hasattr(data.columns, "levels"):
         closes = data["Close"].dropna()
         if len(closes) >= 2:
@@ -134,11 +134,10 @@ def get_fx_to_sek() -> dict[str, float]:
     """
     fx = {"SEK": 1.0}
     if BASE_CCY != "SEK":
-        # För enkelhet: vi kör SEK som bas i ditt fall. (Du kör SEK redan.)
         return fx
 
     pairs = ["USDSEK=X", "CADSEK=X"]
-    fx_closes = get_last_two_closes(pairs)  # last close, prev close
+    fx_closes = get_last_two_closes(pairs)
     usd = fx_closes.get("USDSEK=X", (math.nan, math.nan))[0]
     cad = fx_closes.get("CADSEK=X", (math.nan, math.nan))[0]
     if not is_nan(usd):
@@ -149,12 +148,11 @@ def get_fx_to_sek() -> dict[str, float]:
 
 
 # =========================
-# Report building
+# Compute rows
 # =========================
 def compute_rows(holdings: list[dict]) -> tuple[list[dict], list[str], dict[str, float]]:
     symbols = [h["symbol"] for h in holdings]
     closes = get_last_two_closes(symbols)
-
     fxmap = get_fx_to_sek()
 
     rows: list[dict] = []
@@ -217,6 +215,9 @@ def compute_rows(holdings: list[dict]) -> tuple[list[dict], list[str], dict[str,
     return rows, missing, fxmap
 
 
+# =========================
+# Build email bodies
+# =========================
 def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[str, float]) -> tuple[str, str, str]:
     tz = ZoneInfo("Europe/Stockholm")
     now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
@@ -227,9 +228,9 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
     arrow = "▲" if total_change >= 0 else "▼"
     subject = f"{SUBJECT_PREFIX} {arrow} {fmt_money(total_value, BASE_CCY)} ({fmt_money(total_change, BASE_CCY)})"
 
-    # Plain text (monospace-friendly)
+    # ---------- Plain text (NO ticker) ----------
     header = (
-        f"{'Innehav':24} {'Ticker':12} {'Antal':>8} "
+        f"{'Innehav':24} {'Antal':>8} "
         f"{'Senast':>14} {'Stängn-1':>14} {'Värde':>16} {'Δ idag':>16}"
     )
     lines = [
@@ -242,7 +243,7 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
 
     for r in rows:
         lines.append(
-            f"{r['name'][:24]:24} {r['symbol'][:12]:12} {r['shares']:8.2f} "
+            f"{r['name'][:24]:24} {r['shares']:8.2f} "
             f"{fmt_money(r['last_base'], BASE_CCY):>14} {fmt_money(r['prev_base'], BASE_CCY):>14} "
             f"{fmt_money(r['value'], BASE_CCY):>16} {fmt_money(r['change'], BASE_CCY):>16}"
         )
@@ -250,11 +251,15 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
     lines.append("")
     lines.append(f"Totalt värde: {fmt_money(total_value, BASE_CCY)}")
     lines.append(f"Förändring vs föregående stängning: {fmt_money(total_change, BASE_CCY)}")
+
     if BASE_CCY == "SEK":
-        if "USD" in fxmap:
-            lines.append(f"USD/SEK: {fxmap['USD']:.4f}")
-        if "CAD" in fxmap:
-            lines.append(f"CAD/SEK: {fxmap['CAD']:.4f}")
+        fx_parts = []
+        if "USD" in fxmap and not is_nan(fxmap["USD"]):
+            fx_parts.append(f"USD/SEK: {fxmap['USD']:.4f}")
+        if "CAD" in fxmap and not is_nan(fxmap["CAD"]):
+            fx_parts.append(f"CAD/SEK: {fxmap['CAD']:.4f}")
+        if fx_parts:
+            lines.append(" · ".join(fx_parts))
 
     if missing:
         lines.append("")
@@ -264,21 +269,33 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
 
     body_text = "\n".join(lines)
 
-    # HTML
+    # ---------- HTML (NO ticker + colors) ----------
+    def colorize(value: float, text: str) -> str:
+        # Blått vid plus, rött vid minus
+        if value < 0:
+            return f"<span style='color:#c00000'>{text}</span>"
+        if value > 0:
+            return f"<span style='color:#1f4fd8'>{text}</span>"
+        return text
+
     def td(val: str, align: str = "left") -> str:
-        return f"<td style='padding:6px 10px;border-bottom:1px solid #ddd;text-align:{align};white-space:nowrap'>{val}</td>"
+        return (
+            "<td style='padding:6px 10px;border-bottom:1px solid #ddd;"
+            f"text-align:{align};white-space:nowrap'>{val}</td>"
+        )
 
     html_rows = []
     for r in rows:
+        v = fmt_money(r["value"], BASE_CCY)
+        ch = fmt_money(r["change"], BASE_CCY)
         html_rows.append(
             "<tr>"
-            + td(r["name"])
-            + td(r["symbol"])
+            + td(r["name"], "left")
             + td(fmt_number(r["shares"]), "right")
             + td(fmt_money(r["last_base"], BASE_CCY), "right")
             + td(fmt_money(r["prev_base"], BASE_CCY), "right")
-            + td(fmt_money(r["value"], BASE_CCY), "right")
-            + td(fmt_money(r["change"], BASE_CCY), "right")
+            + td(colorize(r["value"], v), "right")
+            + td(colorize(r["change"], ch), "right")
             + "</tr>"
         )
 
@@ -295,12 +312,14 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
     fx_line = ""
     if BASE_CCY == "SEK":
         parts = []
-        if "USD" in fxmap:
+        if "USD" in fxmap and not is_nan(fxmap["USD"]):
             parts.append(f"USD/SEK: {fxmap['USD']:.4f}")
-        if "CAD" in fxmap:
+        if "CAD" in fxmap and not is_nan(fxmap["CAD"]):
             parts.append(f"CAD/SEK: {fxmap['CAD']:.4f}")
         if parts:
             fx_line = f"<div style='margin-top:6px;color:#444'>{' · '.join(parts)}</div>"
+
+    total_change_html = colorize(total_change, fmt_money(total_change, BASE_CCY))
 
     body_html = f"""
     <html>
@@ -312,7 +331,6 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
           <thead>
             <tr>
               <th style="text-align:left;padding:6px 10px;border-bottom:2px solid #333;">Innehav</th>
-              <th style="text-align:left;padding:6px 10px;border-bottom:2px solid #333;">Ticker</th>
               <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Antal</th>
               <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Senast</th>
               <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Stängn-1</th>
@@ -327,7 +345,7 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
 
         <div style="margin-top:12px;">
           <div><strong>Totalt värde:</strong> {fmt_money(total_value, BASE_CCY)}</div>
-          <div><strong>Förändring vs föregående stängning:</strong> {fmt_money(total_change, BASE_CCY)}</div>
+          <div><strong>Förändring vs föregående stängning:</strong> {total_change_html}</div>
           {fx_line}
         </div>
 
@@ -343,11 +361,15 @@ def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[s
     return subject, body_text, body_html
 
 
+# =========================
+# Send email
+# =========================
 def send_email(subject: str, body_text: str, body_html: str) -> None:
     smtp_host = getenv_required("SMTP_HOST")
     smtp_port = int(getenv_required("SMTP_PORT"))
     smtp_user = getenv_required("SMTP_USER")
     smtp_pass = getenv_required("SMTP_PASS")
+
     email_to = getenv_required("EMAIL_TO")
     email_from = os.getenv("EMAIL_FROM", "").strip() or smtp_user
 
@@ -355,6 +377,7 @@ def send_email(subject: str, body_text: str, body_html: str) -> None:
     msg["Subject"] = subject
     msg["From"] = email_from
     msg["To"] = email_to
+
     msg.set_content(body_text)
     msg.add_alternative(body_html, subtype="html")
 
@@ -366,12 +389,15 @@ def send_email(subject: str, body_text: str, body_html: str) -> None:
         server.send_message(msg)
 
 
+# =========================
+# Main
+# =========================
 def main() -> int:
     holdings = load_holdings()
     rows, missing, fxmap = compute_rows(holdings)
     subject, body_text, body_html = build_subject_and_bodies(rows, missing, fxmap)
 
-    # Logga i Actions
+    # Logg i Actions
     print(subject)
     if missing:
         print("[WARN] Missing price data for:", ", ".join(missing))
