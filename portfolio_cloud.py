@@ -1,10 +1,11 @@
 # portfolio_cloud.py
-# Sends a daily portfolio email (HTML + text) with clean layout:
-# - No ticker in table
-# - Only value, change SEK, change %
-# - Whole kronor (no ören)
-# - SEK shown only in summary
-# - Blue for up, red for down (HTML)
+# Skickar daglig portföljrapport via email (HTML + text)
+# Krav:
+# - Ingen ticker i tabellen
+# - Endast värde, förändring (kr), förändring (%)
+# - Hela kronor, inga ören
+# - SEK visas bara i sammanfattningen
+# - Blått vid uppgång, rött vid nedgång (HTML-mail)
 
 from __future__ import annotations
 
@@ -18,65 +19,88 @@ from typing import Any
 import yfinance as yf
 
 
-# -----------------------------
-# 1) EDIT YOUR HOLDINGS HERE
-# -----------------------------
-# Use Yahoo Finance symbols. Examples:
-#   Swedish stocks: "ERIC-B.ST", "CAMX.ST"
-#   US stocks: "AAPL"
+# =========================================================
+# 1) DINA INNEHAV
+# =========================================================
 HOLDINGS = [
     {"name": "Camurus", "symbol": "CAMX.ST", "shares": 16},
     {"name": "Nelly Group", "symbol": "NELLY.ST", "shares": 98},
-    # {"name": "Ericsson B", "symbol": "ERIC-B.ST", "shares": 120},
 ]
 
 
-# -----------------------------
-# 2) EMAIL / SMTP SETTINGS
-# -----------------------------
-# Set these as GitHub Secrets (recommended):
-#   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_TO
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587").strip() or "587")
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-MAIL_TO = os.getenv("MAIL_TO", "").strip()
-
-# Optional:
-MAIL_FROM = os.getenv("MAIL_FROM", SMTP_USER).strip() or SMTP_USER
-SUBJECT_PREFIX = os.getenv("SUBJECT_PREFIX", "Portföljrapport").strip()
+# =========================================================
+# 2) EMAIL / SMTP – BAKÅTKOMPATIBEL MED GAMLA SECRETS
+# =========================================================
+def _getenv_any(*names: str, default: str = "") -> str:
+    for n in names:
+        v = os.getenv(n, "").strip()
+        if v:
+            return v
+    return default
 
 
-# -----------------------------
-# Formatting helpers
-# -----------------------------
+SMTP_HOST = _getenv_any("SMTP_HOST", "SMTP_SERVER", "MAIL_SERVER", "EMAIL_HOST")
+SMTP_PORT = int(_getenv_any("SMTP_PORT", "MAIL_PORT", default="587") or "587")
+
+SMTP_USER = _getenv_any(
+    "SMTP_USER",
+    "EMAIL_USER",
+    "MAIL_USER",
+    "FROM_EMAIL",
+    "SENDER_EMAIL",
+)
+
+SMTP_PASS = _getenv_any(
+    "SMTP_PASS",
+    "EMAIL_PASS",
+    "MAIL_PASS",
+    "APP_PASSWORD",
+    "EMAIL_APP_PASSWORD",
+)
+
+MAIL_TO = _getenv_any(
+    "MAIL_TO",
+    "TO_EMAIL",
+    "EMAIL_TO",
+    "RECIPIENT_EMAIL",
+)
+
+MAIL_FROM = _getenv_any(
+    "MAIL_FROM",
+    "FROM_EMAIL",
+    "SENDER_EMAIL",
+    default=SMTP_USER,
+)
+
+SUBJECT_PREFIX = _getenv_any("SUBJECT_PREFIX", default="Portföljrapport")
+
+
+# =========================================================
+# 3) FORMATTERING
+# =========================================================
 def _fmt_int(x: Any) -> str:
-    """Whole kronor, Swedish-style spacing; no SEK."""
     try:
-        s = f"{float(x):,.0f}"  # 12,345
-    except (TypeError, ValueError):
+        return f"{float(x):,.0f}".replace(",", " ")
+    except Exception:
         return "-"
-    return s.replace(",", " ")  # 12 345
 
 
 def _fmt_pct(x: Any, decimals: int = 1) -> str:
-    """Signed percent with decimals."""
     try:
         return f"{float(x):+.{decimals}f}%"
-    except (TypeError, ValueError):
+    except Exception:
         return "-"
 
 
-def _color_for_change(change_kr: Any) -> str:
-    """Blue for up, red for down, neutral for 0/None."""
+def _color_for_change(x: Any) -> str:
     try:
-        c = float(change_kr)
-    except (TypeError, ValueError):
+        x = float(x)
+    except Exception:
         return "#333333"
-    if c > 0:
-        return "#0b63c7"  # blue
-    if c < 0:
-        return "#c4001a"  # red
+    if x > 0:
+        return "#0b63c7"  # blå
+    if x < 0:
+        return "#c4001a"  # röd
     return "#333333"
 
 
@@ -86,280 +110,195 @@ def _safe_float(x: Any) -> float | None:
         if v != v:  # NaN
             return None
         return v
-    except (TypeError, ValueError):
+    except Exception:
         return None
 
 
-# -----------------------------
-# Market data
-# -----------------------------
+# =========================================================
+# 4) HÄMTA KURSER
+# =========================================================
 def fetch_quote(symbol: str) -> dict[str, float | None]:
-    """
-    Returns:
-      price: current/last price (regularMarketPrice or last close)
-      prev_close: previous close (previousClose)
-    """
     t = yf.Ticker(symbol)
-    info = {}
+
+    price = None
+    prev_close = None
+
     try:
-        info = t.fast_info or {}
+        fi = t.fast_info or {}
+        price = _safe_float(fi.get("last_price"))
+        prev_close = _safe_float(fi.get("previous_close"))
     except Exception:
-        info = {}
+        pass
 
-    price = _safe_float(info.get("last_price") or info.get("lastPrice") or info.get("regularMarketPrice"))
-    prev_close = _safe_float(info.get("previous_close") or info.get("previousClose"))
-
-    # Fallbacks via .info (slower but sometimes necessary)
     if price is None or prev_close is None:
         try:
-            i = t.info or {}
+            info = t.info or {}
+            price = price or _safe_float(info.get("regularMarketPrice"))
+            prev_close = prev_close or _safe_float(info.get("previousClose"))
         except Exception:
-            i = {}
-        if price is None:
-            price = _safe_float(i.get("regularMarketPrice") or i.get("currentPrice"))
-        if prev_close is None:
-            prev_close = _safe_float(i.get("previousClose"))
+            pass
 
-    # Last resort: use last close from history (and prev close as the one before)
     if price is None or prev_close is None:
         try:
             hist = t.history(period="5d")
-            if not hist.empty:
-                closes = hist["Close"].dropna()
-                if len(closes) >= 2:
-                    price = price if price is not None else float(closes.iloc[-1])
-                    prev_close = prev_close if prev_close is not None else float(closes.iloc[-2])
+            closes = hist["Close"].dropna()
+            if len(closes) >= 2:
+                price = price or float(closes.iloc[-1])
+                prev_close = prev_close or float(closes.iloc[-2])
         except Exception:
             pass
 
     return {"price": price, "prev_close": prev_close}
 
 
-# -----------------------------
-# HTML Builder (your required layout)
-# -----------------------------
-def build_portfolio_email_html(
-    *,
-    rows: list[dict[str, Any]],
-    total_value_sek: float,
-    total_change_sek: float,
-    total_change_pct: float,
-    title: str,
-    asof_text: str,
-) -> str:
-    total_value_txt = f"{_fmt_int(total_value_sek)} SEK"
-    total_change_txt = f"{_fmt_int(total_change_sek)} SEK ({_fmt_pct(total_change_pct, decimals=1)})"
-    total_color = _color_for_change(total_change_sek)
-
-    rows_sorted = sorted(rows, key=lambda r: (r.get("value_sek") or 0), reverse=True)
-
-    tr_html: list[str] = []
-    for r in rows_sorted:
-        name = r.get("name", "-")
-        value = r.get("value_sek", None)
-        chg = r.get("change_sek", None)
-        pct = r.get("change_pct", None)
-
-        chg_color = _color_for_change(chg)
-
-        tr_html.append(
-            f"""
-            <tr>
-              <td style="padding:10px 12px; border-bottom:1px solid #e7e7e7; font-family:Arial,sans-serif; font-size:14px;">
-                {name}
-              </td>
-              <td style="padding:10px 12px; border-bottom:1px solid #e7e7e7; text-align:right; font-family:Arial,sans-serif; font-size:14px;">
-                {_fmt_int(value)}
-              </td>
-              <td style="padding:10px 12px; border-bottom:1px solid #e7e7e7; text-align:right; font-family:Arial,sans-serif; font-size:14px; color:{chg_color}; font-weight:600;">
-                {_fmt_int(chg)}
-              </td>
-              <td style="padding:10px 12px; border-bottom:1px solid #e7e7e7; text-align:right; font-family:Arial,sans-serif; font-size:14px; color:{chg_color}; font-weight:600;">
-                {_fmt_pct(pct, decimals=1)}
-              </td>
-            </tr>
-            """
-        )
-
-    table_html = f"""
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
-           style="border-collapse:collapse; border:1px solid #e7e7e7; border-radius:10px; overflow:hidden;">
-      <thead>
-        <tr style="background:#f6f7f9;">
-          <th align="left"  style="padding:10px 12px; font-family:Arial,sans-serif; font-size:13px; color:#333; border-bottom:1px solid #e7e7e7;">Bolag</th>
-          <th align="right" style="padding:10px 12px; font-family:Arial,sans-serif; font-size:13px; color:#333; border-bottom:1px solid #e7e7e7;">Värde</th>
-          <th align="right" style="padding:10px 12px; font-family:Arial,sans-serif; font-size:13px; color:#333; border-bottom:1px solid #e7e7e7;">Förändring</th>
-          <th align="right" style="padding:10px 12px; font-family:Arial,sans-serif; font-size:13px; color:#333; border-bottom:1px solid #e7e7e7;">%</th>
-        </tr>
-      </thead>
-      <tbody>
-        {''.join(tr_html) if tr_html else '<tr><td colspan="4" style="padding:12px;font-family:Arial,sans-serif;">Inga innehav.</td></tr>'}
-      </tbody>
-    </table>
-    """
-
-    html = f"""
-    <div style="max-width:760px; margin:0 auto; padding:6px 10px;">
-      <div style="font-family:Arial,sans-serif;">
-        <h2 style="margin:10px 0 4px 0; font-size:18px; color:#111;">{title}</h2>
-        <div style="margin:0 0 12px 0; font-size:12px; color:#666;">{asof_text}</div>
-
-        <div style="margin:0 0 14px 0; padding:12px 14px; border:1px solid #e7e7e7; border-radius:10px; background:#ffffff;">
-          <div style="font-size:13px; color:#666; margin-bottom:6px;">Sammanfattning</div>
-          <div style="font-size:14px; color:#111; line-height:1.6;">
-            <div><b>Totalt värde:</b> {total_value_txt}</div>
-            <div><b>Förändring:</b> <span style="color:{total_color}; font-weight:700;">{total_change_txt}</span></div>
-          </div>
-        </div>
-
-        {table_html}
-
-        <div style="margin-top:10px; font-size:12px; color:#777; font-family:Arial,sans-serif;">
-          (Hela kronor. Färg: blå = upp, röd = ner.)
-        </div>
-      </div>
-    </div>
-    """
-    return html
-
-
-def build_portfolio_email_text(
-    *,
-    rows: list[dict[str, Any]],
-    total_value_sek: float,
-    total_change_sek: float,
-    total_change_pct: float,
-    title: str,
-    asof_text: str,
-) -> str:
-    lines = [title, asof_text, ""]
-    lines.append(f"Totalt värde: { _fmt_int(total_value_sek) } SEK")
-    lines.append(f"Förändring:  { _fmt_int(total_change_sek) } SEK ({ _fmt_pct(total_change_pct, 1) })")
-    lines.append("")
-    lines.append("Bolag | Värde | Förändring | %")
-    lines.append("-" * 55)
-    for r in sorted(rows, key=lambda r: (r.get("value_sek") or 0), reverse=True):
-        lines.append(
-            f"{r.get('name','-')} | {_fmt_int(r.get('value_sek'))} | {_fmt_int(r.get('change_sek'))} | {_fmt_pct(r.get('change_pct'),1)}"
-        )
-    return "\n".join(lines)
-
-
-# -----------------------------
-# Email send
-# -----------------------------
-def send_email(subject: str, html_body: str, text_body: str) -> None:
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and MAIL_TO):
-        raise RuntimeError(
-            "Missing SMTP settings. Ensure SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_TO are set as env/secrets."
-        )
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = MAIL_FROM
-    msg["To"] = MAIL_TO
-
-    msg.set_content(text_body)
-    msg.add_alternative(html_body, subtype="html")
-
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        if SMTP_PORT in (587, 25):
-            server.starttls()
-            server.ehlo()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
-
-
-# -----------------------------
-# Main logic
-# -----------------------------
-def compute_portfolio(holdings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], float, float, float]:
-    rows: list[dict[str, Any]] = []
-
+# =========================================================
+# 5) BERÄKNINGAR
+# =========================================================
+def compute_portfolio(holdings):
+    rows = []
     total_value = 0.0
-    total_prev_value = 0.0
+    total_prev = 0.0
 
     for h in holdings:
-        name = str(h.get("name", "")).strip()
-        symbol = str(h.get("symbol", "")).strip()
-        shares = _safe_float(h.get("shares")) or 0.0
-
-        if not name or not symbol or shares == 0:
-            continue
+        name = h["name"]
+        symbol = h["symbol"]
+        shares = float(h["shares"])
 
         q = fetch_quote(symbol)
         price = q["price"]
-        prev_close = q["prev_close"]
+        prev = q["prev_close"]
 
-        # If we can't get prices, skip row but keep going
-        if price is None or prev_close is None:
-            rows.append(
-                {
-                    "name": name,
-                    "value_sek": None,
-                    "change_sek": None,
-                    "change_pct": None,
-                    "note": f"Kunde inte hämta kurs för {symbol}",
-                }
-            )
+        if price is None or prev is None:
             continue
 
-        value = shares * float(price)
-        prev_value = shares * float(prev_close)
+        value = shares * price
+        prev_value = shares * prev
         change = value - prev_value
-        change_pct = (change / prev_value * 100.0) if prev_value != 0 else 0.0
+        pct = (change / prev_value * 100) if prev_value else 0.0
 
         total_value += value
-        total_prev_value += prev_value
+        total_prev += prev_value
 
         rows.append(
             {
                 "name": name,
-                "value_sek": value,
-                "change_sek": change,
-                "change_pct": change_pct,
+                "value": value,
+                "change": change,
+                "pct": pct,
             }
         )
 
-    total_change = total_value - total_prev_value
-    total_change_pct = (total_change / total_prev_value * 100.0) if total_prev_value != 0 else 0.0
+    total_change = total_value - total_prev
+    total_pct = (total_change / total_prev * 100) if total_prev else 0.0
 
-    return rows, total_value, total_change, total_change_pct
+    return rows, total_value, total_change, total_pct
 
 
-def main() -> None:
-    now = datetime.now()  # GitHub Actions runner time is UTC by default unless you set TZ; subject includes date anyway
-    date_str = now.strftime("%Y-%m-%d")
-    title = f"{SUBJECT_PREFIX} – {date_str}"
-    asof_text = f"Skapat: {now.strftime('%Y-%m-%d %H:%M')}"
+# =========================================================
+# 6) HTML + TEXT MAIL
+# =========================================================
+def build_html(rows, total_value, total_change, total_pct, title, timestamp):
+    row_html = ""
+    for r in sorted(rows, key=lambda x: x["value"], reverse=True):
+        color = _color_for_change(r["change"])
+        row_html += f"""
+        <tr>
+          <td style="padding:10px">{r['name']}</td>
+          <td style="padding:10px;text-align:right">{_fmt_int(r['value'])}</td>
+          <td style="padding:10px;text-align:right;color:{color};font-weight:600">
+            {_fmt_int(r['change'])}
+          </td>
+          <td style="padding:10px;text-align:right;color:{color};font-weight:600">
+            {_fmt_pct(r['pct'])}
+          </td>
+        </tr>
+        """
 
-    rows, total_value, total_change, total_change_pct = compute_portfolio(HOLDINGS)
+    total_color = _color_for_change(total_change)
 
-    html_body = build_portfolio_email_html(
-        rows=rows,
-        total_value_sek=total_value,
-        total_change_sek=total_change,
-        total_change_pct=total_change_pct,
-        title=title,
-        asof_text=asof_text,
-    )
-    text_body = build_portfolio_email_text(
-        rows=rows,
-        total_value_sek=total_value,
-        total_change_sek=total_change,
-        total_change_pct=total_change_pct,
-        title=title,
-        asof_text=asof_text,
-    )
+    return f"""
+    <div style="font-family:Arial;max-width:760px;margin:auto">
+      <h2>{title}</h2>
+      <div style="color:#666;font-size:12px">{timestamp}</div>
 
-    send_email(subject=title, html_body=html_body, text_body=text_body)
-    print("OK: Email sent.")
+      <div style="margin:15px 0;padding:12px;border:1px solid #ddd;border-radius:8px">
+        <b>Totalt värde:</b> {_fmt_int(total_value)} SEK<br>
+        <b>Förändring:</b>
+        <span style="color:{total_color};font-weight:700">
+          {_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})
+        </span>
+      </div>
+
+      <table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+        <tr style="background:#f4f4f4">
+          <th align="left">Bolag</th>
+          <th align="right">Värde</th>
+          <th align="right">Förändring</th>
+          <th align="right">%</th>
+        </tr>
+        {row_html}
+      </table>
+    </div>
+    """
+
+
+def build_text(rows, total_value, total_change, total_pct, title, timestamp):
+    lines = [
+        title,
+        timestamp,
+        "",
+        f"Totalt värde: {_fmt_int(total_value)} SEK",
+        f"Förändring:  {_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})",
+        "",
+    ]
+    for r in rows:
+        lines.append(
+            f"{r['name']}: {_fmt_int(r['value'])} | {_fmt_int(r['change'])} | {_fmt_pct(r['pct'])}"
+        )
+    return "\n".join(lines)
+
+
+# =========================================================
+# 7) SKICKA MAIL
+# =========================================================
+def send_email(subject, html, text):
+    if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_TO]):
+        raise RuntimeError("SMTP-inställningar saknas")
+
+    msg = EmailMessage()
+    msg["From"] = MAIL_FROM
+    msg["To"] = MAIL_TO
+    msg["Subject"] = subject
+
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+        s.starttls()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
+
+
+# =========================================================
+# 8) MAIN
+# =========================================================
+def main():
+    now = datetime.now()
+    title = f"{SUBJECT_PREFIX} – {now:%Y-%m-%d}"
+    timestamp = f"Skapad {now:%Y-%m-%d %H:%M}"
+
+    rows, total_value, total_change, total_pct = compute_portfolio(HOLDINGS)
+
+    html = build_html(rows, total_value, total_change, total_pct, title, timestamp)
+    text = build_text(rows, total_value, total_change, total_pct, title, timestamp)
+
+    send_email(title, html, text)
+    print("OK – mail skickat")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print("ERROR:", e, file=sys.stderr)
         raise
