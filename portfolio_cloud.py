@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 import os
@@ -11,11 +13,20 @@ import smtplib
 import yfinance as yf
 
 
-BASE_CCY = os.getenv("BASE_CCY", "SEK")
-SUBJECT_PREFIX = os.getenv("SUBJECT_PREFIX", "Portfölj")
+# =========================
+# Config (env)
+# =========================
+BASE_CCY = (os.getenv("BASE_CCY", "SEK") or "SEK").upper().strip()
+SUBJECT_PREFIX = (os.getenv("SUBJECT_PREFIX", "Portfölj") or "Portfölj").strip()
 HOLDINGS_PATH = Path(os.getenv("HOLDINGS_PATH", "holdings.json"))
 
+# Sorting: value_desc | name_asc | change_desc
+SORT_BY = (os.getenv("SORT_BY", "value_desc") or "value_desc").strip().lower()
 
+
+# =========================
+# Helpers
+# =========================
 def getenv_required(key: str) -> str:
     v = os.getenv(key, "").strip()
     if not v:
@@ -23,81 +34,355 @@ def getenv_required(key: str) -> str:
     return v
 
 
-def safe(x):
-    try:
-        return float(x)
-    except Exception:
-        return math.nan
+def is_nan(x: float) -> bool:
+    return isinstance(x, float) and math.isnan(x)
 
 
-def fmt(v):
-    if math.isnan(v):
+def fmt_money(amount: float, ccy: str) -> str:
+    if amount is None or is_nan(amount):
         return "-"
-    s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
-    return f"{s} {BASE_CCY}"
+    s = f"{amount:,.2f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", " ")
+    return f"{s} {ccy}"
 
 
-def load_holdings():
+def fmt_number(x: float) -> str:
+    if x is None or is_nan(x):
+        return "-"
+    s = f"{x:,.2f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", " ")
+    return s
+
+
+def guess_ccy(symbol: str) -> str:
+    s = symbol.upper().strip()
+    if s.endswith(".ST"):
+        return "SEK"
+    if s.endswith(".TO") or s.endswith(".V"):
+        return "CAD"
+    return "USD"
+
+
+def load_holdings() -> list[dict]:
     if not HOLDINGS_PATH.exists():
-        raise RuntimeError("holdings.json saknas")
+        raise RuntimeError(f"Hittar inte holdings-filen: {HOLDINGS_PATH}")
 
-    return json.loads(HOLDINGS_PATH.read_text(encoding="utf-8"))
+    raw = json.loads(HOLDINGS_PATH.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise RuntimeError("holdings.json måste vara en lista []")
+
+    out: list[dict] = []
+    for item in raw:
+        name = str(item.get("name", "")).strip()
+        symbol = str(item.get("symbol", "")).strip()
+        shares = item.get("shares", 0)
+        if not name or not symbol:
+            continue
+        out.append({"name": name, "symbol": symbol, "shares": float(shares)})
+    return out
 
 
-def main():
-    holdings = load_holdings()
+# =========================
+# Market data (robust)
+# =========================
+def get_last_two_closes(symbols: list[str]) -> dict[str, tuple[float, float]]:
+    """
+    Return dict: symbol -> (last_close, prev_close)
+    Uses yf.download which is usually more reliable on GitHub runners than fast_info.
+    """
+    if not symbols:
+        return {}
+
+    data = yf.download(
+        tickers=" ".join(symbols),
+        period="10d",
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=False,
+        threads=True,
+        progress=False,
+    )
+
+    out: dict[str, tuple[float, float]] = {}
+
+    # If only one ticker, columns are not MultiIndex the same way.
+    if not hasattr(data.columns, "levels"):
+        closes = data["Close"].dropna()
+        if len(closes) >= 2:
+            out[symbols[0]] = (float(closes.iloc[-1]), float(closes.iloc[-2]))
+        else:
+            out[symbols[0]] = (math.nan, math.nan)
+        return out
+
+    # Multi-ticker: columns like (TICKER, 'Close')
+    for sym in symbols:
+        try:
+            series = data[(sym, "Close")].dropna()
+            if len(series) >= 2:
+                out[sym] = (float(series.iloc[-1]), float(series.iloc[-2]))
+            else:
+                out[sym] = (math.nan, math.nan)
+        except Exception:
+            out[sym] = (math.nan, math.nan)
+
+    return out
+
+
+def get_fx_to_sek() -> dict[str, float]:
+    """
+    Returns mapping for USD->SEK and CAD->SEK using Yahoo FX tickers.
+    """
+    fx = {"SEK": 1.0}
+    if BASE_CCY != "SEK":
+        # För enkelhet: vi kör SEK som bas i ditt fall. (Du kör SEK redan.)
+        return fx
+
+    pairs = ["USDSEK=X", "CADSEK=X"]
+    fx_closes = get_last_two_closes(pairs)  # last close, prev close
+    usd = fx_closes.get("USDSEK=X", (math.nan, math.nan))[0]
+    cad = fx_closes.get("CADSEK=X", (math.nan, math.nan))[0]
+    if not is_nan(usd):
+        fx["USD"] = usd
+    if not is_nan(cad):
+        fx["CAD"] = cad
+    return fx
+
+
+# =========================
+# Report building
+# =========================
+def compute_rows(holdings: list[dict]) -> tuple[list[dict], list[str], dict[str, float]]:
     symbols = [h["symbol"] for h in holdings]
+    closes = get_last_two_closes(symbols)
 
-    quotes = yf.Tickers(" ".join(symbols))
-    rows = []
-    total = 0.0
-    change = 0.0
+    fxmap = get_fx_to_sek()
+
+    rows: list[dict] = []
+    missing: list[str] = []
 
     for h in holdings:
-        t = quotes.tickers[h["symbol"]]
-        fi = t.fast_info
+        name = h["name"]
+        sym = h["symbol"]
+        shares = float(h["shares"])
 
-        last = safe(fi.get("last_price"))
-        prev = safe(fi.get("previous_close"))
+        last, prev = closes.get(sym, (math.nan, math.nan))
+        ccy = guess_ccy(sym)
 
-        if math.isnan(last) or math.isnan(prev):
-            continue
+        fx = 1.0
+        if BASE_CCY == "SEK":
+            fx = fxmap.get(ccy, math.nan)
 
-        value = h["shares"] * last
-        delta = h["shares"] * (last - prev)
+        ok = not (is_nan(last) or is_nan(prev) or is_nan(fx))
 
-        total += value
-        change += delta
+        if not ok:
+            missing.append(sym)
 
-        rows.append((h["name"], h["symbol"], value, delta))
+        last_base = last * fx if ok else math.nan
+        prev_base = prev * fx if ok else math.nan
 
-    rows.sort(key=lambda r: -r[2])
+        value = shares * last_base if ok else math.nan
+        change = shares * (last_base - prev_base) if ok else math.nan
 
-    now = datetime.now(ZoneInfo("Europe/Stockholm")).strftime("%Y-%m-%d %H:%M")
-    arrow = "▲" if change >= 0 else "▼"
+        rows.append(
+            {
+                "name": name,
+                "symbol": sym,
+                "shares": shares,
+                "ccy": ccy,
+                "last_base": last_base,
+                "prev_base": prev_base,
+                "value": value,
+                "change": change,
+                "ok": ok,
+            }
+        )
 
-    subject = f"{SUBJECT_PREFIX} {arrow} {fmt(total)} ({fmt(change)})"
+    # Sorting
+    def key_value_desc(r):
+        return (0 if r["ok"] else 1, -(r["value"] if r["ok"] else -1e30))
 
-    lines = [f"Portföljrapport {now}", ""]
+    def key_change_desc(r):
+        return (0 if r["ok"] else 1, -(r["change"] if r["ok"] else -1e30))
+
+    def key_name_asc(r):
+        return (0 if r["ok"] else 1, r["name"].lower())
+
+    if SORT_BY == "name_asc":
+        rows.sort(key=key_name_asc)
+    elif SORT_BY == "change_desc":
+        rows.sort(key=key_change_desc)
+    else:
+        rows.sort(key=key_value_desc)
+
+    return rows, missing, fxmap
+
+
+def build_subject_and_bodies(rows: list[dict], missing: list[str], fxmap: dict[str, float]) -> tuple[str, str, str]:
+    tz = ZoneInfo("Europe/Stockholm")
+    now_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+
+    total_value = sum(r["value"] for r in rows if r["ok"])
+    total_change = sum(r["change"] for r in rows if r["ok"])
+
+    arrow = "▲" if total_change >= 0 else "▼"
+    subject = f"{SUBJECT_PREFIX} {arrow} {fmt_money(total_value, BASE_CCY)} ({fmt_money(total_change, BASE_CCY)})"
+
+    # Plain text (monospace-friendly)
+    header = (
+        f"{'Innehav':24} {'Ticker':12} {'Antal':>8} "
+        f"{'Senast':>14} {'Stängn-1':>14} {'Värde':>16} {'Δ idag':>16}"
+    )
+    lines = [
+        subject,
+        f"Portföljrapport {now_str} (basvaluta: {BASE_CCY})",
+        "",
+        header,
+        "-" * len(header),
+    ]
+
     for r in rows:
-        lines.append(f"{r[0]:22} {r[1]:10} {fmt(r[2]):>14} {fmt(r[3]):>14}")
+        lines.append(
+            f"{r['name'][:24]:24} {r['symbol'][:12]:12} {r['shares']:8.2f} "
+            f"{fmt_money(r['last_base'], BASE_CCY):>14} {fmt_money(r['prev_base'], BASE_CCY):>14} "
+            f"{fmt_money(r['value'], BASE_CCY):>16} {fmt_money(r['change'], BASE_CCY):>16}"
+        )
 
-    body = "\n".join(lines)
+    lines.append("")
+    lines.append(f"Totalt värde: {fmt_money(total_value, BASE_CCY)}")
+    lines.append(f"Förändring vs föregående stängning: {fmt_money(total_change, BASE_CCY)}")
+    if BASE_CCY == "SEK":
+        if "USD" in fxmap:
+            lines.append(f"USD/SEK: {fxmap['USD']:.4f}")
+        if "CAD" in fxmap:
+            lines.append(f"CAD/SEK: {fxmap['CAD']:.4f}")
 
-    print(subject)
-    print(body)
+    if missing:
+        lines.append("")
+        lines.append("⚠️ VARNING – saknar prisdata för:")
+        for sym in missing:
+            lines.append(f"  - {sym}")
+
+    body_text = "\n".join(lines)
+
+    # HTML
+    def td(val: str, align: str = "left") -> str:
+        return f"<td style='padding:6px 10px;border-bottom:1px solid #ddd;text-align:{align};white-space:nowrap'>{val}</td>"
+
+    html_rows = []
+    for r in rows:
+        html_rows.append(
+            "<tr>"
+            + td(r["name"])
+            + td(r["symbol"])
+            + td(fmt_number(r["shares"]), "right")
+            + td(fmt_money(r["last_base"], BASE_CCY), "right")
+            + td(fmt_money(r["prev_base"], BASE_CCY), "right")
+            + td(fmt_money(r["value"], BASE_CCY), "right")
+            + td(fmt_money(r["change"], BASE_CCY), "right")
+            + "</tr>"
+        )
+
+    warn_html = ""
+    if missing:
+        items = "".join([f"<li><code>{m}</code></li>" for m in missing])
+        warn_html = f"""
+        <div style="margin-top:14px;padding:10px 12px;border:1px solid #f0c36d;background:#fff7e6">
+          <strong>⚠️ VARNING</strong> – saknar prisdata för:
+          <ul style="margin:8px 0 0 18px">{items}</ul>
+        </div>
+        """
+
+    fx_line = ""
+    if BASE_CCY == "SEK":
+        parts = []
+        if "USD" in fxmap:
+            parts.append(f"USD/SEK: {fxmap['USD']:.4f}")
+        if "CAD" in fxmap:
+            parts.append(f"CAD/SEK: {fxmap['CAD']:.4f}")
+        if parts:
+            fx_line = f"<div style='margin-top:6px;color:#444'>{' · '.join(parts)}</div>"
+
+    body_html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color:#111;">
+        <h2 style="margin:0 0 8px 0;">{subject}</h2>
+        <div style="color:#444;margin-bottom:10px;">Portföljrapport {now_str} (basvaluta: {BASE_CCY})</div>
+
+        <table style="border-collapse:collapse;font-size:14px;">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding:6px 10px;border-bottom:2px solid #333;">Innehav</th>
+              <th style="text-align:left;padding:6px 10px;border-bottom:2px solid #333;">Ticker</th>
+              <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Antal</th>
+              <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Senast</th>
+              <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Stängn-1</th>
+              <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Värde</th>
+              <th style="text-align:right;padding:6px 10px;border-bottom:2px solid #333;">Δ idag</th>
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(html_rows)}
+          </tbody>
+        </table>
+
+        <div style="margin-top:12px;">
+          <div><strong>Totalt värde:</strong> {fmt_money(total_value, BASE_CCY)}</div>
+          <div><strong>Förändring vs föregående stängning:</strong> {fmt_money(total_change, BASE_CCY)}</div>
+          {fx_line}
+        </div>
+
+        {warn_html}
+
+        <div style="margin-top:14px;color:#666;font-size:12px;">
+          (Mailet skickas även som ren text om din klient skulle visa tabeller konstigt.)
+        </div>
+      </body>
+    </html>
+    """
+
+    return subject, body_text, body_html
+
+
+def send_email(subject: str, body_text: str, body_html: str) -> None:
+    smtp_host = getenv_required("SMTP_HOST")
+    smtp_port = int(getenv_required("SMTP_PORT"))
+    smtp_user = getenv_required("SMTP_USER")
+    smtp_pass = getenv_required("SMTP_PASS")
+    email_to = getenv_required("EMAIL_TO")
+    email_from = os.getenv("EMAIL_FROM", "").strip() or smtp_user
 
     msg = EmailMessage()
-    msg["From"] = getenv_required("EMAIL_FROM")
-    msg["To"] = getenv_required("EMAIL_TO")
     msg["Subject"] = subject
-    msg.set_content(body)
+    msg["From"] = email_from
+    msg["To"] = email_to
+    msg.set_content(body_text)
+    msg.add_alternative(body_html, subtype="html")
 
-    with smtplib.SMTP(getenv_required("SMTP_HOST"), int(getenv_required("SMTP_PORT"))) as s:
-        s.starttls()
-        s.login(getenv_required("SMTP_USER"), getenv_required("SMTP_PASS"))
-        s.send_message(msg)
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
+
+
+def main() -> int:
+    holdings = load_holdings()
+    rows, missing, fxmap = compute_rows(holdings)
+    subject, body_text, body_html = build_subject_and_bodies(rows, missing, fxmap)
+
+    # Logga i Actions
+    print(subject)
+    if missing:
+        print("[WARN] Missing price data for:", ", ".join(missing))
+
+    send_email(subject, body_text, body_html)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        raise
