@@ -5,10 +5,12 @@
 # - Hela kronor (inga ören) för värde/förändring
 # - SEK visas bara i sammanfattningen
 # - Blått vid uppgång, rött vid nedgång (HTML-mail)
+# - Läser innehav från holdings.json (fallback: HOLDINGS i koden)
 # - Bakåtkompatibel med olika secret-namn
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime
@@ -20,14 +22,55 @@ import yfinance as yf
 
 
 # =========================================================
-# 1) DINA INNEHAV – fyll på här
+# 1) INNEHAV: holdings.json (fallback: HOLDINGS)
 # =========================================================
 HOLDINGS = [
+    # Fallback om holdings.json saknas
     {"name": "Camurus", "symbol": "CAMX.ST", "shares": 16},
     {"name": "Nelly Group", "symbol": "NELLY.ST", "shares": 98},
-    # Lägg fler här:
-    # {"name": "Ericsson B", "symbol": "ERIC-B.ST", "shares": 120},
 ]
+
+HOLDINGS_PATH = os.getenv("HOLDINGS_PATH", "holdings.json").strip()
+
+
+def load_holdings() -> list[dict[str, Any]]:
+    """
+    Förväntar sig holdings.json med en lista av objekt:
+      [{"name":"Camurus","symbol":"CAMX.ST","shares":16}, ...]
+    Alternativt kan filen ha ett nyckelfält, t.ex. {"holdings":[...]}.
+    """
+    # 1) Försök läsa från fil
+    try:
+        with open(HOLDINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict) and "holdings" in data and isinstance(data["holdings"], list):
+            holdings = data["holdings"]
+        elif isinstance(data, list):
+            holdings = data
+        else:
+            holdings = []
+
+        cleaned: list[dict[str, Any]] = []
+        for h in holdings:
+            if not isinstance(h, dict):
+                continue
+            name = str(h.get("name", "")).strip()
+            symbol = str(h.get("symbol", "")).strip()
+            shares = h.get("shares")
+            if name and symbol and shares is not None:
+                cleaned.append({"name": name, "symbol": symbol, "shares": shares})
+
+        if cleaned:
+            return cleaned
+
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"VARNING: kunde inte läsa {HOLDINGS_PATH}: {e}", file=sys.stderr)
+
+    # 2) Fallback till hårdkodade HOLDINGS
+    return HOLDINGS
 
 
 # =========================================================
@@ -89,7 +132,7 @@ def _fmt_int(x: Any) -> str:
 
 
 def _fmt_price(x: Any) -> str:
-    """Kurs: 2 decimaler (kan ändras om du vill ha 0/1)."""
+    """Kurs: 2 decimaler."""
     try:
         return f"{float(x):,.2f}".replace(",", " ").replace(".", ",")
     except Exception:
@@ -184,7 +227,7 @@ def fetch_quote(symbol: str) -> dict[str, float | None]:
 # =========================================================
 # 5) BERÄKNINGAR
 # =========================================================
-def compute_portfolio(holdings):
+def compute_portfolio(holdings: list[dict[str, Any]]):
     rows = []
     total_value = 0.0
     total_prev = 0.0
@@ -202,7 +245,6 @@ def compute_portfolio(holdings):
         prev = q["prev_close"]
 
         if price is None or prev is None:
-            # hoppa över, men du kan välja att visa "kunde ej hämta"
             continue
 
         value = shares * price
@@ -236,7 +278,6 @@ def compute_portfolio(holdings):
 def build_html(rows, total_value, total_change, total_pct, title, timestamp):
     total_color = _color_for_change(total_change)
 
-    # sortera: störst värde först
     rows = sorted(rows, key=lambda r: r["value"], reverse=True)
 
     row_html = ""
@@ -339,7 +380,8 @@ def main():
     title = f"{SUBJECT_PREFIX} – {now:%Y-%m-%d}"
     timestamp = f"Skapad {now:%Y-%m-%d %H:%M}"
 
-    rows, total_value, total_change, total_pct = compute_portfolio(HOLDINGS)
+    holdings = load_holdings()
+    rows, total_value, total_change, total_pct = compute_portfolio(holdings)
 
     html = build_html(rows, total_value, total_change, total_pct, title, timestamp)
     text = build_text(rows, total_value, total_change, total_pct, title, timestamp)
