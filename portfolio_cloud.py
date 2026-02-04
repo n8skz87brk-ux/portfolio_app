@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import math
 import os
@@ -13,129 +11,93 @@ import smtplib
 import yfinance as yf
 
 
-# ==================================================
-# Grundinställningar
-# ==================================================
-
-BASE_CCY = os.getenv("BASE_CCY", "SEK").upper()
+BASE_CCY = os.getenv("BASE_CCY", "SEK")
 SUBJECT_PREFIX = os.getenv("SUBJECT_PREFIX", "Portfölj")
 HOLDINGS_PATH = Path(os.getenv("HOLDINGS_PATH", "holdings.json"))
 
 
-# ==================================================
-# Hjälpfunktioner
-# ==================================================
-
 def getenv_required(key: str) -> str:
-    val = os.getenv(key, "").strip()
-    if not val:
+    v = os.getenv(key, "").strip()
+    if not v:
         raise RuntimeError(f"Missing required environment variable: {key}")
-    return val
+    return v
 
 
-def safe_float(x) -> float:
+def safe(x):
     try:
         return float(x)
     except Exception:
         return math.nan
 
 
-def is_nan(x: float) -> bool:
-    return isinstance(x, float) and math.isnan(x)
-
-
-def fmt_money(v: float) -> str:
-    if is_nan(v):
+def fmt(v):
+    if math.isnan(v):
         return "-"
     s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
     return f"{s} {BASE_CCY}"
 
 
-def guess_currency(symbol: str) -> str:
-    s = symbol.upper()
-    if s.endswith(".ST"):
-        return "SEK"
-    if s.endswith(".TO") or s.endswith(".V"):
-        return "CAD"
-    return "USD"
-
-
-# ==================================================
-# Läs innehav
-# ==================================================
-
-def load_holdings() -> list[dict]:
+def load_holdings():
     if not HOLDINGS_PATH.exists():
-        raise RuntimeError(f"Hittar inte holdings.json: {HOLDINGS_PATH}")
+        raise RuntimeError("holdings.json saknas")
 
-    raw = json.loads(HOLDINGS_PATH.read_text(encoding="utf-8"))
-    holdings = []
-
-    for row in raw:
-        holdings.append({
-            "name": row["name"],
-            "symbol": row["symbol"],
-            "shares": float(row["shares"]),
-        })
-
-    return holdings
+    return json.loads(HOLDINGS_PATH.read_text(encoding="utf-8"))
 
 
-# ==================================================
-# Marknadsdata
-# ==================================================
-
-def download_quotes(symbols: list[str]) -> dict:
-    tickers = yf.Tickers(" ".join(symbols))
-    quotes = {}
-
-    for sym in symbols:
-        t = tickers.tickers.get(sym)
-        last = prev = math.nan
-        ccy = None
-
-        try:
-            fi = t.fast_info
-            last = safe_float(fi.get("last_price"))
-            prev = safe_float(fi.get("previous_close"))
-            ccy = fi.get("currency")
-        except Exception:
-            pass
-
-        if is_nan(last) or is_nan(prev) or not ccy:
-            try:
-                info = t.info
-                if is_nan(last):
-                    last = safe_float(info.get("regularMarketPrice"))
-                if is_nan(prev):
-                    prev = safe_float(info.get("regularMarketPreviousClose"))
-                if not ccy:
-                    ccy = info.get("currency")
-            except Exception:
-                pass
-
-        quotes[sym] = {
-            "last": last,
-            "prev": prev,
-            "currency": ccy,
-        }
-
-    return quotes
-
-
-def get_fx_rate(pair: str) -> float:
-    q = yf.Ticker(pair).fast_info
-    return safe_float(q.get("last_price"))
-
-
-# ==================================================
-# Beräkningar
-# ==================================================
-
-def build_rows(holdings: list[dict]):
+def main():
+    holdings = load_holdings()
     symbols = [h["symbol"] for h in holdings]
-    quotes = download_quotes(symbols)
 
-    currencies = set()
-    for s in symbols:
-        currencies.add(quotes[s]["currenc]()
+    quotes = yf.Tickers(" ".join(symbols))
+    rows = []
+    total = 0.0
+    change = 0.0
+
+    for h in holdings:
+        t = quotes.tickers[h["symbol"]]
+        fi = t.fast_info
+
+        last = safe(fi.get("last_price"))
+        prev = safe(fi.get("previous_close"))
+
+        if math.isnan(last) or math.isnan(prev):
+            continue
+
+        value = h["shares"] * last
+        delta = h["shares"] * (last - prev)
+
+        total += value
+        change += delta
+
+        rows.append((h["name"], h["symbol"], value, delta))
+
+    rows.sort(key=lambda r: -r[2])
+
+    now = datetime.now(ZoneInfo("Europe/Stockholm")).strftime("%Y-%m-%d %H:%M")
+    arrow = "▲" if change >= 0 else "▼"
+
+    subject = f"{SUBJECT_PREFIX} {arrow} {fmt(total)} ({fmt(change)})"
+
+    lines = [f"Portföljrapport {now}", ""]
+    for r in rows:
+        lines.append(f"{r[0]:22} {r[1]:10} {fmt(r[2]):>14} {fmt(r[3]):>14}")
+
+    body = "\n".join(lines)
+
+    print(subject)
+    print(body)
+
+    msg = EmailMessage()
+    msg["From"] = getenv_required("EMAIL_FROM")
+    msg["To"] = getenv_required("EMAIL_TO")
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP(getenv_required("SMTP_HOST"), int(getenv_required("SMTP_PORT"))) as s:
+        s.starttls()
+        s.login(getenv_required("SMTP_USER"), getenv_required("SMTP_PASS"))
+        s.send_message(msg)
+
+
+if __name__ == "__main__":
+    main()
