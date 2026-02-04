@@ -1,11 +1,11 @@
 # portfolio_cloud.py
 # Skickar daglig portföljrapport via email (HTML + text)
-# Krav:
-# - Ingen ticker i tabellen
-# - Endast värde, förändring (kr), förändring (%)
-# - Hela kronor, inga ören
+# Layout:
+# - Bolag, Antal, Senaste kurs, Värde, Förändring (kr), Förändring (%)
+# - Hela kronor (inga ören) för värde/förändring
 # - SEK visas bara i sammanfattningen
 # - Blått vid uppgång, rött vid nedgång (HTML-mail)
+# - Bakåtkompatibel med olika secret-namn
 
 from __future__ import annotations
 
@@ -20,11 +20,13 @@ import yfinance as yf
 
 
 # =========================================================
-# 1) DINA INNEHAV
+# 1) DINA INNEHAV – fyll på här
 # =========================================================
 HOLDINGS = [
     {"name": "Camurus", "symbol": "CAMX.ST", "shares": 16},
     {"name": "Nelly Group", "symbol": "NELLY.ST", "shares": 98},
+    # Lägg fler här:
+    # {"name": "Ericsson B", "symbol": "ERIC-B.ST", "shares": 120},
 ]
 
 
@@ -79,8 +81,28 @@ SUBJECT_PREFIX = _getenv_any("SUBJECT_PREFIX", default="Portföljrapport")
 # 3) FORMATTERING
 # =========================================================
 def _fmt_int(x: Any) -> str:
+    """Hela kronor (inga ören), tusentalsavgränsning med mellanslag."""
     try:
         return f"{float(x):,.0f}".replace(",", " ")
+    except Exception:
+        return "-"
+
+
+def _fmt_price(x: Any) -> str:
+    """Kurs: 2 decimaler (kan ändras om du vill ha 0/1)."""
+    try:
+        return f"{float(x):,.2f}".replace(",", " ").replace(".", ",")
+    except Exception:
+        return "-"
+
+
+def _fmt_shares(x: Any) -> str:
+    """Antal: visa utan decimal om heltal, annars 2 decimaler."""
+    try:
+        v = float(x)
+        if abs(v - round(v)) < 1e-9:
+            return f"{int(round(v))}"
+        return f"{v:.2f}".replace(".", ",")
     except Exception:
         return "-"
 
@@ -118,11 +140,17 @@ def _safe_float(x: Any) -> float | None:
 # 4) HÄMTA KURSER
 # =========================================================
 def fetch_quote(symbol: str) -> dict[str, float | None]:
+    """
+    Returnerar:
+      price = senaste kurs
+      prev_close = föregående stängning
+    """
     t = yf.Ticker(symbol)
 
     price = None
     prev_close = None
 
+    # Snabb väg
     try:
         fi = t.fast_info or {}
         price = _safe_float(fi.get("last_price"))
@@ -130,14 +158,16 @@ def fetch_quote(symbol: str) -> dict[str, float | None]:
     except Exception:
         pass
 
+    # Fallback via info
     if price is None or prev_close is None:
         try:
             info = t.info or {}
-            price = price or _safe_float(info.get("regularMarketPrice"))
+            price = price or _safe_float(info.get("regularMarketPrice") or info.get("currentPrice"))
             prev_close = prev_close or _safe_float(info.get("previousClose"))
         except Exception:
             pass
 
+    # Sista utväg: history
     if price is None or prev_close is None:
         try:
             hist = t.history(period="5d")
@@ -160,21 +190,25 @@ def compute_portfolio(holdings):
     total_prev = 0.0
 
     for h in holdings:
-        name = h["name"]
-        symbol = h["symbol"]
-        shares = float(h["shares"])
+        name = str(h.get("name", "")).strip()
+        symbol = str(h.get("symbol", "")).strip()
+        shares = _safe_float(h.get("shares")) or 0.0
+
+        if not name or not symbol or shares == 0:
+            continue
 
         q = fetch_quote(symbol)
         price = q["price"]
         prev = q["prev_close"]
 
         if price is None or prev is None:
+            # hoppa över, men du kan välja att visa "kunde ej hämta"
             continue
 
         value = shares * price
         prev_value = shares * prev
         change = value - prev_value
-        pct = (change / prev_value * 100) if prev_value else 0.0
+        pct = (change / prev_value * 100.0) if prev_value else 0.0
 
         total_value += value
         total_prev += prev_value
@@ -182,6 +216,8 @@ def compute_portfolio(holdings):
         rows.append(
             {
                 "name": name,
+                "shares": shares,
+                "price": price,
                 "value": value,
                 "change": change,
                 "pct": pct,
@@ -189,7 +225,7 @@ def compute_portfolio(holdings):
         )
 
     total_change = total_value - total_prev
-    total_pct = (total_change / total_prev * 100) if total_prev else 0.0
+    total_pct = (total_change / total_prev * 100.0) if total_prev else 0.0
 
     return rows, total_value, total_change, total_pct
 
@@ -198,46 +234,58 @@ def compute_portfolio(holdings):
 # 6) HTML + TEXT MAIL
 # =========================================================
 def build_html(rows, total_value, total_change, total_pct, title, timestamp):
+    total_color = _color_for_change(total_change)
+
+    # sortera: störst värde först
+    rows = sorted(rows, key=lambda r: r["value"], reverse=True)
+
     row_html = ""
-    for r in sorted(rows, key=lambda x: x["value"], reverse=True):
+    for r in rows:
         color = _color_for_change(r["change"])
         row_html += f"""
         <tr>
-          <td style="padding:10px">{r['name']}</td>
-          <td style="padding:10px;text-align:right">{_fmt_int(r['value'])}</td>
-          <td style="padding:10px;text-align:right;color:{color};font-weight:600">
-            {_fmt_int(r['change'])}
-          </td>
-          <td style="padding:10px;text-align:right;color:{color};font-weight:600">
-            {_fmt_pct(r['pct'])}
-          </td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7">{r['name']}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right">{_fmt_shares(r['shares'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right">{_fmt_price(r['price'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right">{_fmt_int(r['value'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
+          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
         </tr>
         """
 
-    total_color = _color_for_change(total_change)
-
     return f"""
-    <div style="font-family:Arial;max-width:760px;margin:auto">
-      <h2>{title}</h2>
-      <div style="color:#666;font-size:12px">{timestamp}</div>
+    <div style="font-family:Arial,sans-serif;max-width:820px;margin:0 auto;padding:6px 10px">
+      <h2 style="margin:10px 0 4px 0;font-size:18px;color:#111">{title}</h2>
+      <div style="margin:0 0 12px 0;font-size:12px;color:#666">{timestamp}</div>
 
-      <div style="margin:15px 0;padding:12px;border:1px solid #ddd;border-radius:8px">
-        <b>Totalt värde:</b> {_fmt_int(total_value)} SEK<br>
-        <b>Förändring:</b>
-        <span style="color:{total_color};font-weight:700">
-          {_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})
-        </span>
+      <div style="margin:0 0 14px 0;padding:12px 14px;border:1px solid #e7e7e7;border-radius:10px;background:#ffffff">
+        <div style="font-size:13px;color:#666;margin-bottom:6px">Sammanfattning</div>
+        <div style="font-size:14px;color:#111;line-height:1.6">
+          <div><b>Totalt värde:</b> {_fmt_int(total_value)} SEK</div>
+          <div><b>Förändring:</b> <span style="color:{total_color};font-weight:700">{_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})</span></div>
+        </div>
       </div>
 
-      <table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
-        <tr style="background:#f4f4f4">
-          <th align="left">Bolag</th>
-          <th align="right">Värde</th>
-          <th align="right">Förändring</th>
-          <th align="right">%</th>
-        </tr>
-        {row_html}
+      <table width="100%" cellspacing="0" cellpadding="0"
+             style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden">
+        <thead>
+          <tr style="background:#f6f7f9">
+            <th align="left"  style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Bolag</th>
+            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Antal</th>
+            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Senaste kurs</th>
+            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Värde</th>
+            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Förändring</th>
+            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">%</th>
+          </tr>
+        </thead>
+        <tbody>
+          {row_html if row_html else '<tr><td colspan="6" style="padding:12px">Inga innehav.</td></tr>'}
+        </tbody>
       </table>
+
+      <div style="margin-top:10px;font-size:12px;color:#777">
+        (Värde/förändring i hela kronor. Blå = upp, röd = ner.)
+      </div>
     </div>
     """
 
@@ -250,10 +298,12 @@ def build_text(rows, total_value, total_change, total_pct, title, timestamp):
         f"Totalt värde: {_fmt_int(total_value)} SEK",
         f"Förändring:  {_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})",
         "",
+        "Bolag | Antal | Kurs | Värde | Förändring | %",
+        "-" * 80,
     ]
-    for r in rows:
+    for r in sorted(rows, key=lambda r: r["value"], reverse=True):
         lines.append(
-            f"{r['name']}: {_fmt_int(r['value'])} | {_fmt_int(r['change'])} | {_fmt_pct(r['pct'])}"
+            f"{r['name']} | {_fmt_shares(r['shares'])} | {_fmt_price(r['price'])} | {_fmt_int(r['value'])} | {_fmt_int(r['change'])} | {_fmt_pct(r['pct'])}"
         )
     return "\n".join(lines)
 
@@ -263,7 +313,7 @@ def build_text(rows, total_value, total_change, total_pct, title, timestamp):
 # =========================================================
 def send_email(subject, html, text):
     if not all([SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_TO]):
-        raise RuntimeError("SMTP-inställningar saknas")
+        raise RuntimeError("SMTP-inställningar saknas (secrets/env matchar inte)")
 
     msg = EmailMessage()
     msg["From"] = MAIL_FROM
@@ -274,7 +324,9 @@ def send_email(subject, html, text):
     msg.add_alternative(html, subtype="html")
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+        s.ehlo()
         s.starttls()
+        s.ehlo()
         s.login(SMTP_USER, SMTP_PASS)
         s.send_message(msg)
 
