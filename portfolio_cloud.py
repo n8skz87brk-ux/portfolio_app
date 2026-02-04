@@ -143,4 +143,4 @@ def download_quotes(symbols: list[str]) -> dict[str, dict]:
             try:
                 inf = t.info
                 if is_nan(last):
-                    last = safe_float(inf.get("regularMarketPrice"_
+                    last = safe_float(inf.get("regularMarketPrice"))
