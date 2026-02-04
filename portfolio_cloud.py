@@ -1,10 +1,10 @@
 # portfolio_cloud.py
 # Daglig portföljrapport via email (HTML + text)
-# - Läser innehav från holdings.json (fallback: HOLDINGS i koden)
-# - Valutakonverterar till SEK om instrumentet handlas i annan valuta (t.ex. CAD, USD)
-# - Tabell: Bolag, Antal, Senaste kurs, Värde, Förändring (kr), Förändring (%)
-# - Hela kronor för värde/förändring, SEK visas bara i sammanfattningen
-# - Blå upp, röd ner (HTML)
+# - Läser innehav från holdings.json (fallback: HOLDINGS)
+# - Valutakonverterar till SEK (t.ex. CAD, USD) via USDSEK=X, CADSEK=X
+# - Tabell: Bolag, Antal, Kurs, Värde, Idag, %
+# - Hela kronor för värde/förändring, SEK bara i sammanfattningen
+# - Blå = upp, röd = ner (HTML)
 # - Bakåtkompatibel med olika secret-namn
 
 from __future__ import annotations
@@ -32,11 +32,6 @@ HOLDINGS_PATH = os.getenv("HOLDINGS_PATH", "holdings.json").strip()
 
 
 def load_holdings() -> list[dict[str, Any]]:
-    """
-    Förväntar sig holdings.json med antingen:
-      - en lista: [{"name":"...","symbol":"...","shares":...}, ...]
-      - eller dict: {"holdings":[...]}
-    """
     try:
         with open(HOLDINGS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -150,30 +145,24 @@ def _safe_float(x: Any) -> float | None:
 
 
 # =========================================================
-# 4) VALUTA (FX) – konvertera till SEK
+# 4) FX – konvertera till SEK
 # =========================================================
 _FX_CACHE: dict[str, float] = {}
 
 
 def get_fx_to_sek(currency: str) -> float | None:
-    """
-    Returnerar växelkurs currency -> SEK.
-    Ex: USD -> SEK via 'USDSEK=X'
-    """
     if not currency:
         return None
-
     cur = currency.upper().strip()
     if cur == "SEK":
         return 1.0
-
     if cur in _FX_CACHE:
         return _FX_CACHE[cur]
 
     fx_symbol = f"{cur}SEK=X"
     try:
         t = yf.Ticker(fx_symbol)
-        # Försök fast_info först
+
         rate = None
         try:
             fi = t.fast_info or {}
@@ -181,7 +170,6 @@ def get_fx_to_sek(currency: str) -> float | None:
         except Exception:
             rate = None
 
-        # Fallback: history
         if rate is None:
             hist = t.history(period="5d")
             closes = hist["Close"].dropna()
@@ -193,7 +181,6 @@ def get_fx_to_sek(currency: str) -> float | None:
 
         _FX_CACHE[cur] = rate
         return rate
-
     except Exception:
         return None
 
@@ -202,19 +189,12 @@ def get_fx_to_sek(currency: str) -> float | None:
 # 5) HÄMTA KURSER (+ valuta)
 # =========================================================
 def fetch_quote(symbol: str) -> dict[str, float | str | None]:
-    """
-    Returnerar:
-      price = senaste kurs (i instrumentets valuta)
-      prev_close = föregående stängning (i instrumentets valuta)
-      currency = t.ex. 'SEK', 'USD', 'CAD'
-    """
     t = yf.Ticker(symbol)
 
     price = None
     prev_close = None
     currency = None
 
-    # Snabb väg
     try:
         fi = t.fast_info or {}
         price = _safe_float(fi.get("last_price"))
@@ -223,7 +203,6 @@ def fetch_quote(symbol: str) -> dict[str, float | str | None]:
     except Exception:
         pass
 
-    # Fallback via info
     try:
         info = t.info or {}
         currency = currency or info.get("currency")
@@ -232,7 +211,6 @@ def fetch_quote(symbol: str) -> dict[str, float | str | None]:
     except Exception:
         pass
 
-    # Sista utväg: history (pris + prev_close)
     if price is None or prev_close is None:
         try:
             hist = t.history(period="5d")
@@ -249,7 +227,7 @@ def fetch_quote(symbol: str) -> dict[str, float | str | None]:
 
 
 # =========================================================
-# 6) BERÄKNINGAR (konverterar allt till SEK för värden/changes)
+# 6) BERÄKNINGAR (allt i SEK)
 # =========================================================
 def compute_portfolio(holdings: list[dict[str, Any]]):
     rows = []
@@ -260,7 +238,6 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
         name = str(h.get("name", "")).strip()
         symbol = str(h.get("symbol", "")).strip()
         shares = _safe_float(h.get("shares")) or 0.0
-
         if not name or not symbol or shares == 0:
             continue
 
@@ -274,11 +251,9 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
 
         fx = get_fx_to_sek(currency)
         if fx is None:
-            # Kan inte konvertera -> hoppa över (eller så kan vi välja att ändå visa original)
             print(f"VARNING: kunde inte hämta FX {currency}->SEK för {name} ({symbol})", file=sys.stderr)
             continue
 
-        # Konvertera kurs till SEK så att Värde/Förändring blir rätt i kronor
         price_sek = float(price) * fx
         prev_sek = float(prev) * fx
 
@@ -294,7 +269,7 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
             {
                 "name": name,
                 "shares": shares,
-                "price_sek": price_sek,   # visas i kolumnen "Senaste kurs"
+                "price_sek": price_sek,
                 "value": value,
                 "change": change,
                 "pct": pct,
@@ -308,24 +283,30 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
 
 
 # =========================================================
-# 7) HTML + TEXT MAIL (kolumnbredder + nowrap fixar wrap-problemet)
+# 7) HTML + TEXT (mobilvänligare + fix för “läckande” decimal)
 # =========================================================
 def build_html(rows, total_value, total_change, total_pct, title, timestamp):
     total_color = _color_for_change(total_change)
     rows = sorted(rows, key=lambda r: r["value"], reverse=True)
 
-    # Bygg rader
+    # Gemensam cellstil för siffror: nowrap + box-sizing + overflow hidden
+    num_cell = (
+        "text-align:right;white-space:nowrap;"
+        "box-sizing:border-box;overflow:hidden;"
+        "font-variant-numeric:tabular-nums;"
+    )
+
     row_html = ""
     for r in rows:
         color = _color_for_change(r["change"])
         row_html += f"""
         <tr>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7">{r['name']}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap">{_fmt_shares(r['shares'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap">{_fmt_price(r['price_sek'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap">{_fmt_int(r['value'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap;color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
-          <td style="padding:10px 12px;border-bottom:1px solid #e7e7e7;text-align:right;white-space:nowrap;color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e7e7e7">{r['name']}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_shares(r['shares'])}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_price(r['price_sek'])}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_int(r['value'])}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e7e7e7;{num_cell}color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid #e7e7e7;{num_cell}color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
         </tr>
         """
 
@@ -342,30 +323,33 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
         </div>
       </div>
 
-      <table width="100%" cellspacing="0" cellpadding="0"
-             style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden;table-layout:fixed">
-        <colgroup>
-          <col style="width:34%">
-          <col style="width:10%">
-          <col style="width:16%">
-          <col style="width:16%">  <!-- Värde: bredare -->
-          <col style="width:16%">
-          <col style="width:8%">
-        </colgroup>
-        <thead>
-          <tr style="background:#f6f7f9">
-            <th align="left"  style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Bolag</th>
-            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Antal</th>
-            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Senaste kurs</th>
-            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Värde</th>
-            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">Förändring</th>
-            <th align="right" style="padding:10px 12px;border-bottom:1px solid #e7e7e7;font-size:13px;color:#333">%</th>
-          </tr>
-        </thead>
-        <tbody>
-          {row_html if row_html else '<tr><td colspan="6" style="padding:12px">Inga innehav.</td></tr>'}
-        </tbody>
-      </table>
+      <!-- “säkerhetsbälte” för stående mobil: om det blir trångt, scrollar tabellen istället för att spricka -->
+      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px">
+        <table width="100%" cellspacing="0" cellpadding="0"
+               style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden;table-layout:fixed;font-size:13px">
+          <colgroup>
+            <col style="width:33%">
+            <col style="width:10%">
+            <col style="width:17%">  <!-- Kurs lite bredare -->
+            <col style="width:18%">  <!-- Värde bredare -->
+            <col style="width:14%">
+            <col style="width:8%">
+          </colgroup>
+          <thead>
+            <tr style="background:#f6f7f9">
+              <th align="left"  style="padding:8px 10px;border-bottom:1px solid #e7e7e7;font-size:12px;color:#333">Bolag</th>
+              <th align="right" style="padding:8px 10px;border-bottom:1px solid #e7e7e7;font-size:12px;color:#333">Antal</th>
+              <th align="right" style="padding:8px 10px;border-bottom:1px solid #e7e7e7;font-size:12px;color:#333">Kurs</th>
+              <th align="right" style="padding:8px 10px;border-bottom:1px solid #e7e7e7;font-size:12px;color:#333">Värde</th>
+              <th align="right" style="padding:8px 10px;border-bottom:1px solid #e7e7e7;font-size:12px;color:#333">Idag</th>
+              <th align="right" style="padding:8px 10px;border-bottom:1px solid #e7e7e7;font-size:12px;color:#333">%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {row_html if row_html else '<tr><td colspan="6" style="padding:12px">Inga innehav.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
 
       <div style="margin-top:10px;font-size:12px;color:#777">
         (Belopp i hela kronor. Blå = upp, röd = ner.)
@@ -382,8 +366,8 @@ def build_text(rows, total_value, total_change, total_pct, title, timestamp):
         f"Totalt värde: {_fmt_int(total_value)} SEK",
         f"Förändring:  {_fmt_int(total_change)} SEK ({_fmt_pct(total_pct)})",
         "",
-        "Bolag | Antal | Kurs | Värde | Förändring | %",
-        "-" * 90,
+        "Bolag | Antal | Kurs | Värde | Idag | %",
+        "-" * 92,
     ]
     for r in sorted(rows, key=lambda r: r["value"], reverse=True):
         lines.append(
