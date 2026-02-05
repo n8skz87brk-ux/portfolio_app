@@ -283,7 +283,7 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
 
 
 # =========================================================
-# 7) HTML + TEXT (mindre font i tabellen)
+# 7) HTML + TEXT (marginalfix runt tabellen)
 # =========================================================
 def build_html(rows, total_value, total_change, total_pct, title, timestamp):
     total_color = _color_for_change(total_change)
@@ -295,22 +295,24 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
         "font-variant-numeric:tabular-nums;"
     )
 
+    # Lite mindre padding i tabellen för att vinna bredd på mobil
     row_html = ""
     for r in rows:
         color = _color_for_change(r["change"])
         row_html += f"""
         <tr>
-          <td style="padding:7px 9px;border-bottom:1px solid #e7e7e7">{r['name']}</td>
-          <td style="padding:7px 9px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_shares(r['shares'])}</td>
-          <td style="padding:7px 9px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_price(r['price_sek'])}</td>
-          <td style="padding:7px 9px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_int(r['value'])}</td>
-          <td style="padding:7px 9px;border-bottom:1px solid #e7e7e7;{num_cell}color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
-          <td style="padding:7px 9px;border-bottom:1px solid #e7e7e7;{num_cell}color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
+          <td style="padding:7px 8px;border-bottom:1px solid #e7e7e7">{r['name']}</td>
+          <td style="padding:7px 8px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_shares(r['shares'])}</td>
+          <td style="padding:7px 8px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_price(r['price_sek'])}</td>
+          <td style="padding:7px 8px;border-bottom:1px solid #e7e7e7;{num_cell}">{_fmt_int(r['value'])}</td>
+          <td style="padding:7px 8px;border-bottom:1px solid #e7e7e7;{num_cell}color:{color};font-weight:600">{_fmt_int(r['change'])}</td>
+          <td style="padding:7px 8px;border-bottom:1px solid #e7e7e7;{num_cell}color:{color};font-weight:600">{_fmt_pct(r['pct'])}</td>
         </tr>
         """
 
     return f"""
-    <div style="font-family:Arial,sans-serif;max-width:860px;margin:0 auto;padding:6px 10px">
+    <!-- Ytter-container: något mindre sidpadding så tabellen får plats på mobil -->
+    <div style="font-family:Arial,sans-serif;max-width:860px;margin:0 auto;padding:6px 6px">
       <h2 style="margin:10px 0 4px 0;font-size:18px;color:#111">{title}</h2>
       <div style="margin:0 0 12px 0;font-size:12px;color:#666">{timestamp}</div>
 
@@ -322,7 +324,8 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
         </div>
       </div>
 
-      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px">
+      <!-- Här är själva marginal-fixen: vi drar ut tabellen lite i sidled -->
+      <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px;margin-left:-8px;margin-right:-8px">
         <table width="100%" cellspacing="0" cellpadding="0"
                style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden;table-layout:fixed;font-size:12px">
           <colgroup>
@@ -335,12 +338,12 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
           </colgroup>
           <thead>
             <tr style="background:#f6f7f9">
-              <th align="left"  style="padding:7px 9px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Bolag</th>
-              <th align="right" style="padding:7px 9px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Antal</th>
-              <th align="right" style="padding:7px 9px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Kurs</th>
-              <th align="right" style="padding:7px 9px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Värde</th>
-              <th align="right" style="padding:7px 9px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Idag</th>
-              <th align="right" style="padding:7px 9px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">%</th>
+              <th align="left"  style="padding:7px 8px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Bolag</th>
+              <th align="right" style="padding:7px 8px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Antal</th>
+              <th align="right" style="padding:7px 8px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Kurs</th>
+              <th align="right" style="padding:7px 8px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Värde</th>
+              <th align="right" style="padding:7px 8px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">Idag</th>
+              <th align="right" style="padding:7px 8px;border-bottom:1px solid #e7e7e7;font-size:11px;color:#333">%</th>
             </tr>
           </thead>
           <tbody>
