@@ -329,12 +329,12 @@ def build_html(rows, total_value, total_change, total_pct, title, timestamp):
         <table width="100%" cellspacing="0" cellpadding="0"
                style="border-collapse:collapse;border:1px solid #e7e7e7;border-radius:10px;overflow:hidden;table-layout:fixed;font-size:12px">
           <colgroup>
-            <col style="width:30%">
+            <col style="width:29%">
             <col style="width:10%">
             <col style="width:17%">
             <col style="width:18%">
             <col style="width:14%">
-            <col style="width:11%">
+            <col style="width:12%">
           </colgroup>
           <thead>
             <tr style="background:#f6f7f9">
