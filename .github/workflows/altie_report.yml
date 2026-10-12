@@ -1,0 +1,39 @@
+name: Altie – daglig rapport
+
+on:
+  schedule:
+    # Vardagar 16:45 UTC = 17:45 vintertid / 18:45 sommartid (efter Stockholmsbörsens stängning)
+    - cron: "45 16 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Skicka Altie-rapport
+        env:
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: "587"
+          SMTP_USER: ${{ secrets.GMAIL_FROM }}
+          SMTP_PASS: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          MAIL_TO: peter@ekvardt.se
+          HOLDINGS_PATH: altie_holdings.json
+          SUBJECT_PREFIX: Altie (Avanza)
+        run: |
+          python portfolio_cloud.py
