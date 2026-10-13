@@ -1,7 +1,9 @@
 name: Altie – registrera affär
 
 # Kör manuellt: Actions -> "Altie – registrera affär" -> Run workflow.
-# Uppdaterar altie_holdings.json och loggar affären i altie_trades.csv.
+# Uppdaterar altie_holdings.json och loggar affären i altie_trades.csv på grenen
+# altie-data (main är skyddad och tar bara emot pull requests). Den dagliga
+# rapporten läser innehavet därifrån.
 
 on:
   workflow_dispatch:
@@ -49,6 +51,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Byt till grenen altie-data
+        run: |
+          if git fetch origin altie-data 2>/dev/null; then
+            git checkout -B altie-data FETCH_HEAD
+          else
+            git checkout -b altie-data
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -75,7 +85,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add altie_holdings.json altie_trades.csv
           git commit -m "Altie: $ACTION $SHARES $SYMBOL"
-          git push
+          git push origin altie-data
 
       - name: Installera beroenden för rapport
         if: ${{ inputs.send_report }}

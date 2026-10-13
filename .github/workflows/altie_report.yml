@@ -15,6 +15,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Hämta senaste innehav (gren altie-data)
+        run: |
+          # Affärer sparas på grenen altie-data eftersom main är skyddad.
+          # Finns inte grenen än används altie_holdings.json från main.
+          if git fetch --depth=1 origin altie-data 2>/dev/null; then
+            git show FETCH_HEAD:altie_holdings.json > altie_holdings.json
+          fi
+          cat altie_holdings.json
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
