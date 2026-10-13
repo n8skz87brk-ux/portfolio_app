@@ -294,6 +294,12 @@ class HoldingsApp(tk.Tk):
         e_name = ttk.Entry(frm, width=45)
         e_name.grid(row=4, column=0, columnspan=2, sticky="we", pady=(0, 10))
 
+        ttk.Label(frm, text="Belopp inkl. courtage (valfritt, justerar likvida medel)").grid(
+            row=5, column=0, columnspan=2, sticky="w"
+        )
+        e_amount = ttk.Entry(frm, width=16, justify="right")
+        e_amount.grid(row=6, column=0, sticky="w", pady=(0, 10))
+
         e_symbol.insert(0, initial["symbol"])
         e_name.insert(0, initial["name"])
         dialog.after(80, lambda: self._select_all(e_shares if initial["symbol"] else e_symbol))
@@ -301,7 +307,8 @@ class HoldingsApp(tk.Tk):
         def on_ok():
             try:
                 new_holdings, info = trade.apply_trade(
-                    self.holdings, action.get(), e_symbol.get(), e_shares.get(), e_name.get()
+                    self.holdings, action.get(), e_symbol.get(), e_shares.get(), e_name.get(),
+                    e_amount.get(),
                 )
             except ValueError as e:
                 messagebox.showerror("Fel", str(e), parent=dialog)
@@ -317,15 +324,10 @@ class HoldingsApp(tk.Tk):
             self.holdings = trade.load_holdings(HOLDINGS_FILE)
             self._refresh_table()
             dialog.destroy()
-            messagebox.showinfo(
-                "Sparat",
-                f"{trade.ACTIONS[info['action']]} {info['name']} ({info['symbol']}): "
-                f"{trade.fmt_shares(info['before'])} st -> {trade.fmt_shares(info['after'])} st"
-                f"\n\nSparat i {HOLDINGS_FILE}.",
-            )
+            messagebox.showinfo("Sparat", f"{trade.describe(info)}\n\nSparat i {HOLDINGS_FILE}.")
 
         btnbar = ttk.Frame(frm)
-        btnbar.grid(row=5, column=0, columnspan=2, sticky="e")
+        btnbar.grid(row=7, column=0, columnspan=2, sticky="e")
         ttk.Button(btnbar, text="Avbryt", command=dialog.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(btnbar, text="OK", command=on_ok).pack(side="right")
 
