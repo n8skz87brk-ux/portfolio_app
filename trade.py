@@ -40,14 +40,24 @@ def normalize_action(action: str) -> str:
     return _ACTION_ALIASES[a]
 
 
-def parse_shares(raw: Any) -> int:
+def parse_shares(raw: Any) -> int | float:
+    """Heltal för aktier, upp till 6 decimaler för fondandelar."""
     try:
         v = float(str(raw).strip().replace(",", ".").replace(" ", ""))
     except Exception:
         raise ValueError(f"Antal måste vara ett tal, fick '{raw}'.")
-    if v < 0 or abs(v - round(v)) > 1e-9:
-        raise ValueError(f"Antal måste vara ett heltal (0 eller större), fick '{raw}'.")
-    return int(round(v))
+    if v != v or v < 0:
+        raise ValueError(f"Antal måste vara 0 eller större, fick '{raw}'.")
+    return _clean_number(v)
+
+
+def _clean_number(v: float) -> int | float:
+    v = round(float(v), 6)
+    return int(v) if v == int(v) else v
+
+
+def fmt_shares(v: Any) -> str:
+    return str(v).replace(".", ",")
 
 
 def load_holdings(path: str) -> list[dict[str, Any]]:
@@ -89,14 +99,16 @@ def apply_trade(
 
     holdings = [dict(h) for h in holdings]
     existing = next((h for h in holdings if str(h["symbol"]).upper() == symbol), None)
-    before = int(existing["shares"]) if existing else 0
+    before = _clean_number(existing["shares"]) if existing else 0
 
     if action == "kop":
-        after = before + qty
+        after = _clean_number(before + qty)
     elif action == "salj":
         if qty > before:
-            raise ValueError(f"Kan inte sälja {qty} st {symbol} – innehavet är {before} st.")
-        after = before - qty
+            raise ValueError(
+                f"Kan inte sälja {fmt_shares(qty)} st {symbol} – innehavet är {fmt_shares(before)} st."
+            )
+        after = _clean_number(before - qty)
     else:
         after = qty
 
@@ -153,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--file", default="altie_holdings.json", help="Innehavsfil (JSON)")
     p.add_argument("--action", required=True, help="köp, sälj eller sätt")
     p.add_argument("--symbol", required=True, help="Yahoo-symbol, t.ex. VOLV-B.ST")
-    p.add_argument("--shares", required=True, help="Antal aktier")
+    p.add_argument("--shares", required=True, help="Antal aktier/fondandelar (decimaler tillåtna)")
     p.add_argument("--name", default="", help="Bolagsnamn (krävs i praktiken för nya innehav)")
     p.add_argument("--log", default=None, help="Loggfil (CSV). Default: <fil>_trades.csv")
     args = p.parse_args(argv)
@@ -170,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"{ACTIONS[info['action']]} {info['name']} ({info['symbol']}): "
-        f"{info['before']} st -> {info['after']} st"
+        f"{fmt_shares(info['before'])} st -> {fmt_shares(info['after'])} st"
     )
     return 0
 
