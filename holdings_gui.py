@@ -1,9 +1,14 @@
 import json
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-HOLDINGS_FILE = "holdings.json"
+import trade
+
+# Välj fil som argument, t.ex. Altie-portföljen:
+#   python holdings_gui.py altie_holdings.json
+HOLDINGS_FILE = sys.argv[1] if len(sys.argv) > 1 else "holdings.json"
 
 
 def load_holdings() -> list[dict]:
@@ -69,6 +74,7 @@ class HoldingsApp(tk.Tk):
         btns = ttk.Frame(top)
         btns.pack(side="right")
 
+        ttk.Button(btns, text="Köp/Sälj", command=self.trade_dialog).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Lägg till", command=self.add_dialog).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Ändra", command=self.edit_dialog).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Ta bort", command=self.delete_row).pack(side="left", padx=(0, 8))
@@ -102,8 +108,8 @@ class HoldingsApp(tk.Tk):
         bottom.pack(fill="x")
         ttk.Label(
             bottom,
-            text="Tips: Dubbelklicka på en rad för att ändra. Klicka på rubrikerna för att sortera. "
-                 "Spara skriver till holdings.json.",
+            text="Tips: Markera en rad och tryck Köp/Sälj för att registrera en affär (sparas direkt). "
+                 f"Spara skriver till {HOLDINGS_FILE}.",
             foreground="#666",
         ).pack(side="left")
 
@@ -258,6 +264,74 @@ class HoldingsApp(tk.Tk):
         ttk.Button(btnbar, text="Avbryt", command=dialog.destroy).pack(side="right", padx=(8, 0))
         ttk.Button(btnbar, text="OK", command=on_ok).pack(side="right")
 
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+
+    def trade_dialog(self):
+        idx = self._selected_index()
+        initial = self.holdings[idx] if idx is not None else {"name": "", "symbol": ""}
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Registrera affär")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frm = ttk.Frame(dialog, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        action = tk.StringVar(value="kop")
+        rb = ttk.Frame(frm)
+        rb.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        for key in ("kop", "salj", "satt"):
+            ttk.Radiobutton(rb, text=trade.ACTIONS[key], variable=action, value=key).pack(side="left", padx=(0, 12))
+
+        ttk.Label(frm, text="Symbol").grid(row=1, column=0, sticky="w")
+        e_symbol = ttk.Entry(frm, width=20)
+        e_symbol.grid(row=2, column=0, sticky="we", padx=(0, 10), pady=(0, 10))
+
+        ttk.Label(frm, text="Antal").grid(row=1, column=1, sticky="w")
+        e_shares = ttk.Entry(frm, width=12, justify="right")
+        e_shares.grid(row=2, column=1, sticky="w", pady=(0, 10))
+
+        ttk.Label(frm, text="Namn (behövs bara för nya innehav)").grid(row=3, column=0, columnspan=2, sticky="w")
+        e_name = ttk.Entry(frm, width=45)
+        e_name.grid(row=4, column=0, columnspan=2, sticky="we", pady=(0, 10))
+
+        e_symbol.insert(0, initial["symbol"])
+        e_name.insert(0, initial["name"])
+        dialog.after(80, lambda: self._select_all(e_shares if initial["symbol"] else e_symbol))
+
+        def on_ok():
+            try:
+                new_holdings, info = trade.apply_trade(
+                    self.holdings, action.get(), e_symbol.get(), e_shares.get(), e_name.get()
+                )
+            except ValueError as e:
+                messagebox.showerror("Fel", str(e), parent=dialog)
+                return
+
+            try:
+                trade.save_holdings(HOLDINGS_FILE, new_holdings)
+                trade.append_log(trade.default_log_path(HOLDINGS_FILE), info)
+            except Exception as e:
+                messagebox.showerror("Fel", f"Kunde inte spara: {e}", parent=dialog)
+                return
+
+            self.holdings = trade.load_holdings(HOLDINGS_FILE)
+            self._refresh_table()
+            dialog.destroy()
+            messagebox.showinfo(
+                "Sparat",
+                f"{trade.ACTIONS[info['action']]} {info['name']} ({info['symbol']}): "
+                f"{info['before']} st -> {info['after']} st\n\nSparat i {HOLDINGS_FILE}.",
+            )
+
+        btnbar = ttk.Frame(frm)
+        btnbar.grid(row=5, column=0, columnspan=2, sticky="e")
+        ttk.Button(btnbar, text="Avbryt", command=dialog.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(btnbar, text="OK", command=on_ok).pack(side="right")
+
+        dialog.bind("<Return>", lambda _e: on_ok())
         dialog.bind("<Escape>", lambda _e: dialog.destroy())
 
     def delete_row(self):

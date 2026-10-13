@@ -32,6 +32,9 @@ HOLDINGS_PATH = os.getenv("HOLDINGS_PATH", "holdings.json").strip()
 
 
 def load_holdings() -> list[dict[str, Any]]:
+    # Fallback till HOLDINGS gäller bara huvudportföljen (holdings.json).
+    # Andra portföljer (t.ex. altie_holdings.json) får gärna vara tomma.
+    fallback = HOLDINGS if os.path.basename(HOLDINGS_PATH) == "holdings.json" else []
     try:
         with open(HOLDINGS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -53,13 +56,13 @@ def load_holdings() -> list[dict[str, Any]]:
             if name and symbol and shares is not None:
                 cleaned.append({"name": name, "symbol": symbol, "shares": shares})
 
-        return cleaned or HOLDINGS
+        return cleaned or fallback
 
     except FileNotFoundError:
-        return HOLDINGS
+        return fallback
     except Exception as e:
         print(f"VARNING: kunde inte läsa {HOLDINGS_PATH}: {e}", file=sys.stderr)
-        return HOLDINGS
+        return fallback
 
 
 # =========================================================

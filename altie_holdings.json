@@ -1,0 +1,62 @@
+[
+  {
+    "name": "Camurus",
+    "symbol": "CAMX.ST",
+    "shares": 39
+  },
+  {
+    "name": "Elemental Royalty (CAD)",
+    "symbol": "ELE.V",
+    "shares": 249
+  },
+  {
+    "name": "Ericsson B",
+    "symbol": "ERIC-B.ST",
+    "shares": 156
+  },
+  {
+    "name": "Hansa Biopharma",
+    "symbol": "HNSA.ST",
+    "shares": 150
+  },
+  {
+    "name": "Mineros S.A. (CAD)",
+    "symbol": "MSA.TO",
+    "shares": 753
+  },
+  {
+    "name": "Nelly Group",
+    "symbol": "NELLY.ST",
+    "shares": 234
+  },
+  {
+    "name": "Nordea Bank",
+    "symbol": "NDA-SE.ST",
+    "shares": 6
+  },
+  {
+    "name": "Plejd",
+    "symbol": "PLEJD.ST",
+    "shares": 72
+  },
+  {
+    "name": "Saab B",
+    "symbol": "SAAB-B.ST",
+    "shares": 131
+  },
+  {
+    "name": "Sivers Semiconductors",
+    "symbol": "SIVE.ST",
+    "shares": 212
+  },
+  {
+    "name": "Swedish Orphan Biovitrum",
+    "symbol": "SOBI.ST",
+    "shares": 86
+  },
+  {
+    "name": "Tele2 B",
+    "symbol": "TEL2-B.ST",
+    "shares": 25
+  }
+]

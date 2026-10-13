@@ -1,0 +1,95 @@
+name: Altie – registrera affär
+
+# Kör manuellt: Actions -> "Altie – registrera affär" -> Run workflow.
+# Uppdaterar altie_holdings.json och loggar affären i altie_trades.csv.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Åtgärd"
+        required: true
+        type: choice
+        options:
+          - köp
+          - sälj
+          - sätt
+      symbol:
+        description: "Yahoo-symbol (t.ex. VOLV-B.ST, ELE.V)"
+        required: true
+        type: string
+      shares:
+        description: "Antal aktier (vid 'sätt' = nytt totalt innehav)"
+        required: true
+        type: string
+      name:
+        description: "Bolagsnamn (behövs bara för nya innehav)"
+        required: false
+        type: string
+        default: ""
+      send_report:
+        description: "Skicka rapport direkt efteråt"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: altie-holdings
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Registrera affär
+        env:
+          ACTION: ${{ inputs.action }}
+          SYMBOL: ${{ inputs.symbol }}
+          SHARES: ${{ inputs.shares }}
+          NAME: ${{ inputs.name }}
+        run: |
+          python trade.py --file altie_holdings.json \
+            --action "$ACTION" --symbol "$SYMBOL" --shares "$SHARES" --name "$NAME" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit och push
+        env:
+          ACTION: ${{ inputs.action }}
+          SYMBOL: ${{ inputs.symbol }}
+          SHARES: ${{ inputs.shares }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add altie_holdings.json altie_trades.csv
+          git commit -m "Altie: $ACTION $SHARES $SYMBOL"
+          git push
+
+      - name: Installera beroenden för rapport
+        if: ${{ inputs.send_report }}
+        run: pip install -r requirements.txt
+
+      - name: Skicka rapport
+        if: ${{ inputs.send_report }}
+        env:
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: "587"
+          SMTP_USER: ${{ secrets.GMAIL_FROM }}
+          SMTP_PASS: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          MAIL_TO: peter@ekvardt.se
+          HOLDINGS_PATH: altie_holdings.json
+          SUBJECT_PREFIX: Altie (Avanza)
+        run: python portfolio_cloud.py
