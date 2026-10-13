@@ -25,6 +25,11 @@
     "shares": 150
   },
   {
+    "name": "Likvida medel",
+    "symbol": "CASH",
+    "shares": 10654
+  },
+  {
     "name": "Mineros S.A. (CAD)",
     "symbol": "MSA.TO",
     "shares": 753
