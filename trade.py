@@ -41,7 +41,7 @@ def normalize_action(action: str) -> str:
 
 
 def parse_shares(raw: Any) -> int | float:
-    """Heltal för aktier, upp till 4 decimaler för fondandelar."""
+    """Heltal för aktier, upp till 6 decimaler för fondandelar."""
     try:
         v = float(str(raw).strip().replace(",", ".").replace(" ", ""))
     except Exception:
@@ -52,7 +52,7 @@ def parse_shares(raw: Any) -> int | float:
 
 
 def _clean_number(v: float) -> int | float:
-    v = round(float(v), 4)
+    v = round(float(v), 6)
     return int(v) if v == int(v) else v
 
 
