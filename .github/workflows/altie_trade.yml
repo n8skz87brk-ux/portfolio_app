@@ -29,6 +29,11 @@ on:
         required: false
         type: string
         default: ""
+      amount:
+        description: "Belopp i kr inkl. courtage (dras från/läggs till likvida medel). Kontanter: symbol CASH"
+        required: false
+        type: string
+        default: ""
       send_report:
         description: "Skicka rapport direkt efteråt"
         required: false
@@ -71,9 +76,11 @@ jobs:
           SYMBOL: ${{ inputs.symbol }}
           SHARES: ${{ inputs.shares }}
           NAME: ${{ inputs.name }}
+          AMOUNT: ${{ inputs.amount }}
         run: |
+          set -o pipefail
           python trade.py --file altie_holdings.json \
-            --action "$ACTION" --symbol "$SYMBOL" --shares "$SHARES" --name "$NAME" \
+            --action "$ACTION" --symbol "$SYMBOL" --shares "$SHARES" --name "$NAME" --amount "$AMOUNT" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Commit och push

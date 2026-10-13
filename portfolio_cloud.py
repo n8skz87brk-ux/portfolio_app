@@ -194,6 +194,9 @@ def fetch_quote(symbol: str) -> dict[str, float | str | None]:
     Returnerar price, prev_close och currency.
     Robust: fast_info -> info -> history
     """
+    if symbol.upper() == "CASH":  # Likvida medel, alltid 1 SEK
+        return {"price": 1.0, "prev_close": 1.0, "currency": "SEK"}
+
     t = yf.Ticker(symbol)
 
     price = None
@@ -278,6 +281,7 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
         rows.append(
             {
                 "name": name,
+                "is_cash": symbol.upper() == "CASH",
                 "shares": shares,
                 "price_sek": price_sek,
                 "value": value,
@@ -296,7 +300,7 @@ def compute_portfolio(holdings: list[dict[str, Any]]):
 # =========================================================
 def build_html(rows, total_value, total_change, total_pct, title, timestamp):
     total_color = _color_for_change(total_change)
-    rows = sorted(rows, key=lambda r: r["value"], reverse=True)
+    rows = sorted(rows, key=lambda r: (r.get("is_cash", False), -r["value"]))
 
     num_cell = (
         "text-align:right;white-space:nowrap;"
@@ -376,7 +380,7 @@ def build_text(rows, total_value, total_change, total_pct, title, timestamp):
         "Bolag | Antal | Kurs | Värde | Idag | %",
         "-" * 92,
     ]
-    for r in sorted(rows, key=lambda r: r["value"], reverse=True):
+    for r in sorted(rows, key=lambda r: (r.get("is_cash", False), -r["value"])):
         lines.append(
             f"{r['name']} | {_fmt_shares(r['shares'])} | {_fmt_price(r['price_sek'])} | "
             f"{_fmt_int(r['value'])} | {_fmt_int(r['change'])} | {_fmt_pct(r['pct'])}"
