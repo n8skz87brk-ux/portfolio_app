@@ -26,10 +26,9 @@ def load_holdings() -> list[dict]:
                 continue
             name = str(h.get("name", "")).strip()
             symbol = str(h.get("symbol", "")).strip()
-            shares = h.get("shares", 0)
             try:
-                shares = int(shares)
-            except Exception:
+                shares = trade.parse_shares(h.get("shares", 0))
+            except ValueError:
                 shares = 0
             if name and symbol:
                 out.append({"name": name, "symbol": symbol, "shares": shares})
@@ -128,7 +127,7 @@ class HoldingsApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
 
         for idx, h in enumerate(self.holdings):
-            shares_txt = f"{h['shares']} st"
+            shares_txt = f"{trade.fmt_shares(h['shares'])} st"
             self.tree.insert("", "end", iid=str(idx), values=(h["name"], h["symbol"], shares_txt))
 
         self._update_header_arrows()
@@ -175,7 +174,7 @@ class HoldingsApp(tk.Tk):
         if col in ("name", "symbol"):
             self.holdings.sort(key=lambda x: x[col].lower(), reverse=desc)
         else:
-            self.holdings.sort(key=lambda x: int(x.get(col, 0)), reverse=desc)
+            self.holdings.sort(key=lambda x: float(x.get(col, 0)), reverse=desc)
 
         self._refresh_table()
 
@@ -190,7 +189,7 @@ class HoldingsApp(tk.Tk):
         h = self.holdings[idx]
         self._open_edit_dialog(
             title="Ändra innehav",
-            initial={"name": h["name"], "symbol": h["symbol"], "shares": str(h["shares"])},
+            initial={"name": h["name"], "symbol": h["symbol"], "shares": trade.fmt_shares(h["shares"])},
             idx=idx,
         )
 
@@ -243,11 +242,9 @@ class HoldingsApp(tk.Tk):
                 return
 
             try:
-                shares = int(shares_raw) if shares_raw != "" else 0
-                if shares < 0:
-                    raise ValueError()
-            except Exception:
-                messagebox.showerror("Fel", "Antal måste vara ett heltal (0 eller större).")
+                shares = trade.parse_shares(shares_raw) if shares_raw != "" else 0
+            except ValueError:
+                messagebox.showerror("Fel", "Antal måste vara ett tal (0 eller större).")
                 self._select_all(e_shares)
                 return
 
@@ -323,7 +320,8 @@ class HoldingsApp(tk.Tk):
             messagebox.showinfo(
                 "Sparat",
                 f"{trade.ACTIONS[info['action']]} {info['name']} ({info['symbol']}): "
-                f"{info['before']} st -> {info['after']} st\n\nSparat i {HOLDINGS_FILE}.",
+                f"{trade.fmt_shares(info['before'])} st -> {trade.fmt_shares(info['after'])} st"
+                f"\n\nSparat i {HOLDINGS_FILE}.",
             )
 
         btnbar = ttk.Frame(frm)

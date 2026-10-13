@@ -21,7 +21,7 @@ on:
         required: true
         type: string
       shares:
-        description: "Antal aktier (vid 'sätt' = nytt totalt innehav)"
+        description: "Antal aktier/fondandelar, decimaler ok (vid 'sätt' = nytt totalt innehav)"
         required: true
         type: string
       name:
@@ -51,12 +51,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Byt till grenen altie-data
+      - name: Hämta innehav från grenen altie-data
         run: |
+          # Koden körs alltid från main; bara datafilerna hämtas från altie-data.
           if git fetch origin altie-data 2>/dev/null; then
-            git checkout -B altie-data FETCH_HEAD
-          else
-            git checkout -b altie-data
+            echo "DATA_BRANCH_EXISTS=1" >> "$GITHUB_ENV"
+            git show FETCH_HEAD:altie_holdings.json > altie_holdings.json
+            git show FETCH_HEAD:altie_trades.csv > altie_trades.csv 2>/dev/null || true
           fi
 
       - name: Set up Python
@@ -83,9 +84,18 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp altie_holdings.json altie_trades.csv "$RUNNER_TEMP/"
+          if [ "${DATA_BRANCH_EXISTS:-}" = "1" ]; then
+            git checkout -f -B altie-data FETCH_HEAD
+          else
+            git checkout -f -B altie-data
+          fi
+          cp "$RUNNER_TEMP/altie_holdings.json" "$RUNNER_TEMP/altie_trades.csv" .
           git add altie_holdings.json altie_trades.csv
           git commit -m "Altie: $ACTION $SHARES $SYMBOL"
           git push origin altie-data
+          git checkout -f "$GITHUB_SHA"
+          cp "$RUNNER_TEMP/altie_holdings.json" .
 
       - name: Installera beroenden för rapport
         if: ${{ inputs.send_report }}
